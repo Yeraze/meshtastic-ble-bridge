@@ -1,0 +1,30 @@
+# Exclude documentation and analysis from Docker build context
+README_BLE_BRIDGE.md
+../docs/BLE_TCP_BRIDGE_ANALYSIS.md
+
+# Exclude git files
+.git
+.gitignore
+
+# Exclude Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Exclude virtual environments
+venv/
+env/
+ENV/
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Exclude test files
+test_*.py
+*_test.py
