@@ -140,6 +140,10 @@ For issues, questions, or contributions:
 - MeshMonitor: https://github.com/Yeraze/meshmonitor
 - Meshtastic: https://meshtastic.org
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=yeraze/meshtastic-ble-bridge&type=date&legend=top-left)](https://www.star-history.com/#yeraze/meshtastic-ble-bridge&type=date&legend=top-left)
+
 ## License
 
 BSD-3-Clause (same as MeshMonitor)
