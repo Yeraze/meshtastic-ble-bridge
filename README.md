@@ -3,7 +3,7 @@
 [![Docker Image](https://ghcr-badge.egpl.dev/yeraze/meshtastic-ble-bridge/latest_tag?color=%235b4566&ignore=latest,main&label=version&trim=)](https://github.com/Yeraze/meshmonitor/pkgs/container/meshtastic-ble-bridge)
 [![Docker Pulls](https://ghcr-badge.egpl.dev/yeraze/meshtastic-ble-bridge/size?color=%235b4566&tag=latest&label=image%20size&trim=)](https://github.com/Yeraze/meshmonitor/pkgs/container/meshtastic-ble-bridge)
 
-A Docker-based bridge that connects Bluetooth Low Energy (BLE) Meshtastic devices to MeshMonitor via TCP.
+A Docker-based bridge that exposes a TCP api to Bluetooth Low Energy (BLE) Meshtastic devices. Designed for use with MeshMonitor, but works with any tool that supports the Meshtastic TCP interface.
 
 ## What's Included
 
