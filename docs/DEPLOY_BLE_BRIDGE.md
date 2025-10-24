@@ -27,6 +27,7 @@ Loaded image: meshmonitor-ble-bridge:latest
 docker run --rm --privileged --network host \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge --scan
 ```
 
@@ -70,10 +71,16 @@ docker run -d --name ble-bridge \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF
 ```
 
 Replace `AA:BB:CC:DD:EE:FF` with your device's MAC address from step 2.
+
+**Volume Mounts Explained:**
+- `/var/run/dbus` - Required for Bluetooth D-Bus communication
+- `/var/lib/bluetooth` - Pairing information (read-only)
+- `/etc/avahi/services` - mDNS service registration for autodiscovery
 
 ### 4. Verify It's Running
 
@@ -91,8 +98,26 @@ netstat -tln | grep 4403
 You should see output like:
 ```
 INFO:root:Connected to Meshtastic device AA:BB:CC:DD:EE:FF
+INFO:root:✅ mDNS service registered: Meshtastic BLE Bridge (aabbcc)
+INFO:root:   Service type: _meshtastic._tcp.local.
+INFO:root:   Port: 4403
 INFO:root:TCP server listening on 0.0.0.0:4403
 ```
+
+### 4a. Test mDNS Autodiscovery (Optional)
+
+Verify the bridge is discoverable on your network:
+
+```bash
+# Browse for Meshtastic services
+avahi-browse -rt _meshtastic._tcp
+
+# Or check the service file was created
+ls -l /etc/avahi/services/meshtastic-ble-bridge-*.service
+cat /etc/avahi/services/meshtastic-ble-bridge-*.service
+```
+
+The bridge automatically registers itself with Avahi, allowing clients to discover it without knowing the IP address.
 
 ### 5. Configure MeshMonitor
 
@@ -162,6 +187,7 @@ docker run -d --name ble-bridge \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --verbose
 ```
 
@@ -188,10 +214,13 @@ docker run -d --name ble-bridge \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --port 14403
 ```
 
 Then configure MeshMonitor with `MESHTASTIC_NODE_PORT=14403`
+
+**Note:** The mDNS service will automatically advertise the custom port in its TXT records.
 
 ## Support
 

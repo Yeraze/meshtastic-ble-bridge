@@ -5,6 +5,12 @@
 
 A Docker-based bridge that exposes a TCP api to Bluetooth Low Energy (BLE) Meshtastic devices. Designed for use with MeshMonitor, but works with any tool that supports the Meshtastic TCP interface.
 
+**Features:**
+- BLE-to-TCP protocol translation
+- mDNS/Avahi autodiscovery for zero-configuration networking
+- Automatic service registration and cleanup
+- Graceful shutdown with proper resource cleanup
+
 ## What's Included
 
 ```
@@ -58,13 +64,28 @@ docker run -d --name ble-bridge \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF
 ```
+
+The bridge will automatically register an mDNS service for network autodiscovery.
 
 ### 5. Connect MeshMonitor
 Point MeshMonitor to:
 - **IP:** `<bridge-host-ip>`
 - **Port:** `4403`
+
+Or use mDNS autodiscovery to find the bridge automatically on your network:
+```bash
+# Test mDNS discovery
+avahi-browse -rt _meshtastic._tcp
+```
+
+The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records containing:
+- `bridge=ble`
+- `port=4403`
+- `ble_address=<device-mac>`
+- `version=1.1`
 
 ## Documentation
 
@@ -88,15 +109,18 @@ This package includes `docs/CLAUDE_BLE_BRIDGE.md` which provides complete contex
 ┌──────────────┐  TCP 4403         ┌───────────────┐
 │ MeshMonitor  │ ←────────────────→│  BLE Bridge   │
 └──────────────┘                    └───────┬───────┘
-                                            │ BLE
-                                    ┌───────▼───────┐
-                                    │  Meshtastic   │
+      ↑                                     │ BLE
+      │ mDNS autodiscovery          ┌───────▼───────┐
+      └─────────────────────────────│  Meshtastic   │
                                     └───────────────┘
 ```
 
 The bridge translates between:
 - **BLE:** Raw protobuf bytes on Meshtastic GATT characteristics
 - **TCP:** Framed protocol `[0x94][0xC3][LEN][PROTOBUF]`
+
+And provides:
+- **mDNS:** Automatic service discovery via Avahi (`_meshtastic._tcp.local.`)
 
 ## Docker Compose Integration
 

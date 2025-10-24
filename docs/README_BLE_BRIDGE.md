@@ -35,7 +35,8 @@ The bridge:
 1. Connects to a Meshtastic device via BLE
 2. Listens for TCP connections on localhost:4403
 3. Translates between BLE and TCP protocols
-4. Allows MeshMonitor to work with BLE-only devices
+4. Registers mDNS service for network autodiscovery
+5. Allows MeshMonitor to work with BLE-only devices
 
 ## Usage
 
@@ -169,20 +170,41 @@ You can also run just the BLE bridge:
 
 ```bash
 # Build the image
-docker build -t meshmonitor-ble-bridge ./tools
+docker build -t meshmonitor-ble-bridge ./src
 
 # Run the bridge
 docker run --rm --privileged --network host \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF
 
 # With verbose logging
 docker run --rm --privileged --network host \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
   meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --verbose
 ```
+
+### Testing mDNS Autodiscovery
+
+Once the bridge is running, you can verify it's advertising on the network:
+
+```bash
+# Browse for Meshtastic services
+avahi-browse -rt _meshtastic._tcp
+
+# You should see output like:
+# +   eth0 IPv4 Meshtastic BLE Bridge (594c71)    _meshtastic._tcp     local
+# =   eth0 IPv4 Meshtastic BLE Bridge (594c71)    _meshtastic._tcp     local
+#    hostname = [hostname.local]
+#    address = [192.168.1.100]
+#    port = [4403]
+#    txt = ["version=1.1" "ble_address=48:CA:43:59:4C:71" "port=4403" "bridge=ble"]
+```
+
+The mDNS service allows clients to automatically discover the bridge on the local network without needing to know the IP address.
 
 ## Development Status
 
@@ -194,6 +216,11 @@ This is a functional proof-of-concept that demonstrates BLE-to-TCP bridging. It 
 - Single BLE device at a time
 - No automatic reconnection yet
 - Limited error recovery
+
+**Implemented Features (v1.1):**
+- ✅ mDNS/Avahi autodiscovery
+- ✅ Graceful shutdown with proper cleanup
+- ✅ Automatic service registration/deregistration
 
 **Future Enhancements:**
 - Automatic BLE reconnection
