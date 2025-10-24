@@ -22,6 +22,7 @@ import struct
 import logging
 import argparse
 import sys
+import os
 import signal
 from typing import List, Optional
 from bleak import BleakClient, BleakScanner
@@ -500,12 +501,14 @@ Examples:
         asyncio.run(scan_for_meshtastic())
         return
 
-    # Validate BLE address
-    if not args.ble_address:
-        parser.error("BLE address is required (use --scan to find devices)")
+    # Validate BLE address - check argument first, then environment variable
+    ble_address = args.ble_address or os.environ.get('BLE_ADDRESS')
+
+    if not ble_address:
+        parser.error("BLE address is required. Provide as argument or set BLE_ADDRESS environment variable (use --scan to find devices)")
 
     # Create and run bridge
-    bridge = MeshtasticBLEBridge(args.ble_address, args.port)
+    bridge = MeshtasticBLEBridge(ble_address, args.port)
 
     async def run_bridge():
         """Run bridge with proper shutdown handling."""

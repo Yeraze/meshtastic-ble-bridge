@@ -1,5 +1,7 @@
 # Docker Compose for BLE-to-TCP Bridge
-# Usage: BLE_ADDRESS=48:CA:43:59:4C:71 docker compose up
+# Usage:
+#   docker compose up                              # Uses default BLE_ADDRESS below
+#   BLE_ADDRESS=XX:XX:XX:XX:XX:XX docker compose up # Override with your device
 
 services:
   ble-bridge:
@@ -17,8 +19,9 @@ services:
     environment:
       # BLE MAC address of your Meshtastic device
       # Find it using: docker compose run --rm ble-bridge --scan
-      - BLE_ADDRESS=${BLE_ADDRESS:-}
-    command: ${BLE_ADDRESS:?BLE_ADDRESS must be set} --verbose
+      # To change: Edit the address below or override with BLE_ADDRESS environment variable
+      - BLE_ADDRESS=48:CA:43:59:4C:71
+    command: --verbose
     healthcheck:
       test: ["CMD-SHELL", "netstat -tln | grep -q :4403 || exit 1"]
       interval: 30s
