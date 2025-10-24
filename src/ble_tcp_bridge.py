@@ -29,7 +29,7 @@ from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2
 
 # Version
-__version__ = "1.1"
+__version__ = "1.2"
 
 # TCP Protocol constants
 START1 = 0x94
@@ -175,7 +175,7 @@ class MeshtasticBLEBridge:
     <txt-record>bridge=ble</txt-record>
     <txt-record>port={self.tcp_port}</txt-record>
     <txt-record>ble_address={self.ble_address}</txt-record>
-    <txt-record>version=1.0</txt-record>
+    <txt-record>version={__version__}</txt-record>
   </service>
 </service-group>
 '''

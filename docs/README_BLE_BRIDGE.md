@@ -201,7 +201,7 @@ avahi-browse -rt _meshtastic._tcp
 #    hostname = [hostname.local]
 #    address = [192.168.1.100]
 #    port = [4403]
-#    txt = ["version=1.1" "ble_address=48:CA:43:59:4C:71" "port=4403" "bridge=ble"]
+#    txt = ["version=1.2" "ble_address=48:CA:43:59:4C:71" "port=4403" "bridge=ble"]
 ```
 
 The mDNS service allows clients to automatically discover the bridge on the local network without needing to know the IP address.
@@ -217,10 +217,11 @@ This is a functional proof-of-concept that demonstrates BLE-to-TCP bridging. It 
 - No automatic reconnection yet
 - Limited error recovery
 
-**Implemented Features (v1.1):**
+**Implemented Features (v1.2):**
 - ✅ mDNS/Avahi autodiscovery
 - ✅ Graceful shutdown with proper cleanup
 - ✅ Automatic service registration/deregistration
+- ✅ BLE_ADDRESS environment variable support
 
 **Future Enhancements:**
 - Automatic BLE reconnection
