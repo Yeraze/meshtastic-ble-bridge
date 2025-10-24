@@ -7,6 +7,7 @@ A Docker-based bridge that exposes a TCP api to Bluetooth Low Energy (BLE) Mesht
 
 **Features:**
 - BLE-to-TCP protocol translation
+- Automatic reconnection on node reboots or disconnects (v1.3+)
 - mDNS/Avahi autodiscovery for zero-configuration networking
 - Automatic service registration and cleanup
 - Graceful shutdown with proper resource cleanup
@@ -85,7 +86,7 @@ The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records conta
 - `bridge=ble`
 - `port=4403`
 - `ble_address=<device-mac>`
-- `version=1.2`
+- `version=1.3`
 
 ## Documentation
 
@@ -157,6 +158,44 @@ Container needs `--privileged` flag for BLE access
 - Verify bridge listening on `0.0.0.0:4403`
 - Check firewall allows port 4403
 - Test with: `telnet <bridge-ip> 4403`
+
+## Reconnection Behavior (v1.3+)
+
+The bridge now automatically handles node reboots and BLE disconnections:
+
+**Internal Reconnection:**
+- Detects disconnections immediately via callback and polling
+- Attempts up to 5 reconnections with exponential backoff (2s, 4s, 8s, 16s, 32s)
+- Continues operation if reconnection succeeds
+
+**Container Restart:**
+- If all reconnection attempts fail, the container exits with error code 1
+- Docker's `restart: unless-stopped` policy automatically restarts the container
+- Fresh container attempts clean connection to the device
+
+**Recommended Docker Configuration:**
+```yaml
+services:
+  ble-bridge:
+    restart: unless-stopped  # Auto-restart on failure
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -tln | grep -q :4403 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+**Monitoring:**
+Check logs to see reconnection activity:
+```bash
+docker logs -f ble-bridge
+```
+
+Look for:
+- `⚠️  BLE device disconnected` - Initial disconnect detected
+- `🔄 Reconnection attempt X/5` - Retry in progress
+- `✅ Reconnected successfully` - Success
+- `💀 Failed to reconnect` - Container will exit and restart
 
 ## Support & Development
 

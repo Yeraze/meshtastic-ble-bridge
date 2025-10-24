@@ -29,7 +29,7 @@ from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2
 
 # Version
-__version__ = "1.2"
+__version__ = "1.3"
 
 # TCP Protocol constants
 START1 = 0x94
@@ -48,6 +48,12 @@ class MeshtasticBLEBridge:
     Bridges Meshtastic BLE to TCP protocol for MeshMonitor compatibility.
     """
 
+    # Reconnection behavior constants
+    MAX_RECONNECT_ATTEMPTS = 5
+    INITIAL_RECONNECT_DELAY = 2.0  # seconds
+    MAX_RECONNECT_DELAY = 60.0  # seconds
+    RECONNECT_BACKOFF_FACTOR = 2.0
+
     def __init__(self, ble_address: str, tcp_port: int = 4403):
         self.ble_address = ble_address
         self.tcp_port = tcp_port
@@ -63,8 +69,21 @@ class MeshtasticBLEBridge:
         self.poll_task: Optional[asyncio.Task] = None
         self.tcp_server = None
 
+        # Reconnection state
+        self.reconnect_attempts = 0
+        self.is_reconnecting = False
+        self.disconnection_event = asyncio.Event()
+
         # Avahi service file path
         self.avahi_service_file = None
+
+    def on_ble_disconnect(self, client: BleakClient):
+        """
+        Callback invoked when BLE device disconnects.
+        Triggers reconnection logic.
+        """
+        logger.warning(f"⚠️  BLE device disconnected: {self.ble_address}")
+        self.disconnection_event.set()
 
     async def start(self):
         """Start the BLE-TCP bridge."""
@@ -139,6 +158,36 @@ class MeshtasticBLEBridge:
             if not self.ble_client.is_connected:
                 raise RuntimeError("Failed to establish BLE connection")
 
+            # Wait for service discovery to complete
+            logger.debug("Waiting for service discovery...")
+            max_wait = 10  # seconds
+            wait_interval = 0.5  # seconds
+            waited = 0
+
+            while waited < max_wait:
+                # Try to get the services - if they're not ready, this will be empty or incomplete
+                try:
+                    services = self.ble_client.services
+                    # Check if our Meshtastic service UUID is present
+                    if services and any(str(s.uuid).lower() == self.MESHTASTIC_SERVICE_UUID.lower() for s in services):
+                        logger.debug(f"Service discovery complete ({waited:.1f}s)")
+                        break
+                except Exception:
+                    pass
+
+                await asyncio.sleep(wait_interval)
+                waited += wait_interval
+            else:
+                logger.warning(f"Service discovery may be incomplete after {max_wait}s")
+
+            # Register disconnection callback
+            self.ble_client.set_disconnected_callback(self.on_ble_disconnect)
+
+            # Reset reconnection state on successful connection
+            self.reconnect_attempts = 0
+            self.is_reconnecting = False
+            self.disconnection_event.clear()
+
             logger.info(f"✅ Connected to BLE device: {self.ble_address}")
 
             # Start polling task for FromRadio characteristic (it doesn't support notifications)
@@ -148,6 +197,58 @@ class MeshtasticBLEBridge:
         except Exception as e:
             logger.error(f"❌ Failed to connect to BLE device: {e}")
             raise
+
+    async def attempt_reconnection(self):
+        """
+        Attempt to reconnect to BLE device with exponential backoff.
+        Returns True if reconnected successfully, False if max attempts exceeded.
+        """
+        if self.is_reconnecting:
+            logger.debug("Reconnection already in progress")
+            return True
+
+        self.is_reconnecting = True
+
+        while self.reconnect_attempts < self.MAX_RECONNECT_ATTEMPTS and self.running:
+            self.reconnect_attempts += 1
+            current_attempt = self.reconnect_attempts  # Save for logging after successful connect
+
+            # Calculate backoff delay with exponential increase
+            delay = min(
+                self.INITIAL_RECONNECT_DELAY * (self.RECONNECT_BACKOFF_FACTOR ** (self.reconnect_attempts - 1)),
+                self.MAX_RECONNECT_DELAY
+            )
+
+            logger.info(f"🔄 Reconnection attempt {self.reconnect_attempts}/{self.MAX_RECONNECT_ATTEMPTS} in {delay:.1f}s...")
+            await asyncio.sleep(delay)
+
+            try:
+                # Disconnect old client if still exists
+                if self.ble_client:
+                    try:
+                        if self.ble_client.is_connected:
+                            await self.ble_client.disconnect()
+                    except Exception as disc_err:
+                        logger.debug(f"Error disconnecting old client: {disc_err}")
+                    self.ble_client = None
+
+                # Attempt reconnection (this will reset reconnect_attempts to 0 on success)
+                await self.connect_ble()
+
+                logger.info(f"✅ Reconnected successfully after {current_attempt} attempt(s)")
+                self.is_reconnecting = False
+                return True
+
+            except Exception as e:
+                logger.warning(f"❌ Reconnection attempt {self.reconnect_attempts} failed: {e}")
+
+                if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
+                    logger.error(f"💀 Max reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) exceeded")
+                    self.is_reconnecting = False
+                    return False
+
+        self.is_reconnecting = False
+        return False
 
     async def register_mdns_service(self):
         """Register mDNS service via Avahi service file for autodiscovery.
@@ -207,10 +308,28 @@ class MeshtasticBLEBridge:
         """
         Poll the FromRadio characteristic for incoming data.
         The Meshtastic BLE API uses read-based polling, not notifications.
+        Monitors connection health and triggers reconnection on disconnect.
         """
         logger.debug("Starting FromRadio polling loop")
-        while self.running and self.ble_client and self.ble_client.is_connected:
+
+        while self.running:
             try:
+                # Check if we're connected
+                if not self.ble_client or not self.ble_client.is_connected:
+                    logger.warning("⚠️  BLE connection lost in poll loop")
+
+                    # Attempt reconnection
+                    reconnected = await self.attempt_reconnection()
+
+                    if not reconnected:
+                        logger.error("💀 Failed to reconnect to BLE device - exiting for container restart")
+                        # Exit with error code so Docker can restart the container
+                        self.running = False
+                        sys.exit(1)
+
+                    # Successfully reconnected, continue polling
+                    continue
+
                 # Read from FromRadio characteristic
                 data = await self.ble_client.read_gatt_char(self.FROMRADIO_UUID)
 
@@ -224,7 +343,19 @@ class MeshtasticBLEBridge:
             except Exception as e:
                 if self.running:
                     logger.error(f"Error polling FromRadio: {e}")
-                    await asyncio.sleep(1.0)  # Back off on error
+
+                    # If error suggests disconnection, trigger reconnection
+                    if "not connected" in str(e).lower() or "disconnected" in str(e).lower():
+                        logger.warning("⚠️  Detected disconnection via error message")
+                        reconnected = await self.attempt_reconnection()
+
+                        if not reconnected:
+                            logger.error("💀 Failed to reconnect after error - exiting for container restart")
+                            self.running = False
+                            sys.exit(1)
+                    else:
+                        # Other error, back off and retry
+                        await asyncio.sleep(1.0)
                 else:
                     break
 
@@ -342,18 +473,25 @@ class MeshtasticBLEBridge:
 
         except asyncio.IncompleteReadError:
             logger.info(f"TCP client {addr} disconnected")
+        except ConnectionResetError:
+            logger.info(f"TCP client {addr} connection reset by peer")
         except Exception as e:
             logger.error(f"Error handling TCP client: {e}")
         finally:
             if writer in self.tcp_clients:
                 self.tcp_clients.remove(writer)
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, ConnectionError, OSError):
+                # Connection already closed by peer - this is fine
+                pass
             logger.info(f"TCP client {addr} closed ({len(self.tcp_clients)} remaining)")
 
     async def send_to_ble(self, packet: mesh_pb2.ToRadio):
         """Send ToRadio packet to BLE device."""
         if not self.ble_client or not self.ble_client.is_connected:
+            logger.warning("⚠️  Cannot send to BLE - not connected (will be dropped)")
             raise RuntimeError("BLE client not connected")
 
         try:
@@ -369,6 +507,12 @@ class MeshtasticBLEBridge:
 
         except Exception as e:
             logger.error(f"Failed to send to BLE: {e}")
+
+            # If error indicates disconnection, trigger the disconnection event
+            if "not connected" in str(e).lower() or "disconnected" in str(e).lower():
+                logger.warning("⚠️  Detected disconnection during send")
+                self.disconnection_event.set()
+
             raise
 
     async def stop(self):
@@ -531,11 +675,15 @@ Examples:
             logger.info("\n🛑 Interrupted by user")
         except Exception as e:
             logger.error(f"❌ Bridge failed: {e}")
-            raise
+            # Exit with error code for container restart on fatal errors
+            sys.exit(1)
         finally:
             # Remove signal handlers
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.remove_signal_handler(sig)
+                try:
+                    loop.remove_signal_handler(sig)
+                except Exception:
+                    pass  # Ignore errors during cleanup
             await bridge.stop()
 
     try:
