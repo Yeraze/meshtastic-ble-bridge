@@ -7,7 +7,7 @@
 services:
   ble-bridge:
     build:
-      context: ./tools
+      context: ./src
       dockerfile: Dockerfile
     container_name: meshmonitor-ble-bridge
     privileged: true  # Required for BLE hardware access

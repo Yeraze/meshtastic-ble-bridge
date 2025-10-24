@@ -1,0 +1,27 @@
+# Docker Compose for BLE-to-TCP Bridge
+# Usage: BLE_ADDRESS=48:CA:43:59:4C:71 docker compose up
+
+services:
+  ble-bridge:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    container_name: meshmonitor-ble-bridge
+    privileged: true  # Required for BLE hardware access
+    network_mode: host  # Allows localhost TCP communication
+    restart: unless-stopped
+    volumes:
+      - /var/run/dbus:/var/run/dbus  # Required for D-Bus/Bluetooth access
+      - /var/lib/bluetooth:/var/lib/bluetooth:ro  # Pairing information
+      - /etc/avahi/services:/etc/avahi/services  # mDNS autodiscovery
+    environment:
+      # BLE MAC address of your Meshtastic device
+      # Find it using: docker compose run --rm ble-bridge --scan
+      - BLE_ADDRESS=${BLE_ADDRESS:-}
+    command: ${BLE_ADDRESS:?BLE_ADDRESS must be set} --verbose
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -tln | grep -q :4403 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

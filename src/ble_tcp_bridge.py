@@ -22,9 +22,13 @@ import struct
 import logging
 import argparse
 import sys
+import signal
 from typing import List, Optional
 from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2
+
+# Version
+__version__ = "1.1"
 
 # TCP Protocol constants
 START1 = 0x94
@@ -56,6 +60,10 @@ class MeshtasticBLEBridge:
         self.tcp_clients: List[asyncio.StreamWriter] = []
         self.running = False
         self.poll_task: Optional[asyncio.Task] = None
+        self.tcp_server = None
+
+        # Avahi service file path
+        self.avahi_service_file = None
 
     async def start(self):
         """Start the BLE-TCP bridge."""
@@ -67,6 +75,9 @@ class MeshtasticBLEBridge:
 
         # Connect to BLE device
         await self.connect_ble()
+
+        # Register mDNS service for autodiscovery
+        await self.register_mdns_service()
 
         # Start TCP server
         await self.start_tcp_server()
@@ -136,6 +147,60 @@ class MeshtasticBLEBridge:
         except Exception as e:
             logger.error(f"❌ Failed to connect to BLE device: {e}")
             raise
+
+    async def register_mdns_service(self):
+        """Register mDNS service via Avahi service file for autodiscovery.
+
+        Writes a service file to /etc/avahi/services/ which the host's Avahi
+        daemon will automatically detect and publish on the network.
+
+        Requires: -v /etc/avahi/services:/etc/avahi/services
+        """
+        import os
+
+        try:
+            # Create a sanitized service name from BLE address
+            sanitized_addr = self.ble_address.replace(':', '').lower()
+            service_name = f"Meshtastic BLE Bridge ({sanitized_addr[-6:]})"
+
+            # Create Avahi service XML
+            service_xml = f'''<?xml version="1.0" standalone="no"?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name>{service_name}</name>
+  <service>
+    <type>_meshtastic._tcp</type>
+    <port>{self.tcp_port}</port>
+    <txt-record>bridge=ble</txt-record>
+    <txt-record>port={self.tcp_port}</txt-record>
+    <txt-record>ble_address={self.ble_address}</txt-record>
+    <txt-record>version=1.0</txt-record>
+  </service>
+</service-group>
+'''
+
+            service_file_path = f"/etc/avahi/services/meshtastic-ble-bridge-{sanitized_addr}.service"
+
+            try:
+                # Write service file for host's Avahi daemon
+                with open(service_file_path, 'w') as f:
+                    f.write(service_xml)
+                self.avahi_service_file = service_file_path
+
+                logger.info(f"✅ mDNS service registered: {service_name}")
+                logger.info(f"   Service type: _meshtastic._tcp.local.")
+                logger.info(f"   Port: {self.tcp_port}")
+                logger.info(f"   Host Avahi will publish this service automatically")
+                logger.info(f"   Test with: avahi-browse -rt _meshtastic._tcp")
+
+            except PermissionError:
+                logger.warning(f"Cannot write to {service_file_path}")
+                logger.warning(f"mDNS autodiscovery will not work (TCP bridge still functional)")
+                logger.info(f"Mount /etc/avahi/services with: -v /etc/avahi/services:/etc/avahi/services")
+
+        except Exception as e:
+            logger.warning(f"Failed to register mDNS service (bridge will still work): {e}")
+            logger.debug(f"mDNS registration error details:", exc_info=True)
 
     async def poll_from_radio(self):
         """
@@ -223,20 +288,20 @@ class MeshtasticBLEBridge:
 
     async def start_tcp_server(self):
         """Start TCP server to accept connections from MeshMonitor."""
-        server = await asyncio.start_server(
+        self.tcp_server = await asyncio.start_server(
             self.handle_tcp_client,
             '0.0.0.0',  # Listen on all interfaces
             self.tcp_port
         )
 
-        addr = server.sockets[0].getsockname()
+        addr = self.tcp_server.sockets[0].getsockname()
         logger.info(f"✅ TCP server listening on {addr[0]}:{addr[1]}")
         logger.info(f"MeshMonitor can now connect to <bridge-ip>:{self.tcp_port}")
 
         self.running = True
 
-        async with server:
-            await server.serve_forever()
+        async with self.tcp_server:
+            await self.tcp_server.serve_forever()
 
     async def handle_tcp_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """Handle a new TCP client connection."""
@@ -307,8 +372,26 @@ class MeshtasticBLEBridge:
 
     async def stop(self):
         """Stop the bridge."""
+        import os
         logger.info("Stopping BLE-TCP bridge...")
         self.running = False
+
+        # Close TCP server
+        if self.tcp_server:
+            logger.info("Closing TCP server...")
+            self.tcp_server.close()
+            await self.tcp_server.wait_closed()
+            logger.info("✅ TCP server closed")
+
+        # Remove Avahi service file
+        if hasattr(self, 'avahi_service_file') and self.avahi_service_file:
+            try:
+                logger.info("Removing mDNS service file...")
+                if os.path.exists(self.avahi_service_file):
+                    os.remove(self.avahi_service_file)
+                logger.info("✅ mDNS service file removed")
+            except Exception as e:
+                logger.warning(f"Failed to remove mDNS service file: {e}")
 
         # Cancel polling task
         if self.poll_task:
@@ -318,11 +401,14 @@ class MeshtasticBLEBridge:
             except asyncio.CancelledError:
                 pass
 
+        # Disconnect BLE device
         if self.ble_client and self.ble_client.is_connected:
             try:
+                logger.info("Disconnecting from BLE device...")
                 await self.ble_client.disconnect()
-            except:
-                pass
+                logger.info("✅ BLE device disconnected")
+            except Exception as e:
+                logger.warning(f"Failed to disconnect BLE device: {e}")
 
 
 async def scan_for_meshtastic():
@@ -421,11 +507,39 @@ Examples:
     # Create and run bridge
     bridge = MeshtasticBLEBridge(args.ble_address, args.port)
 
+    async def run_bridge():
+        """Run bridge with proper shutdown handling."""
+        loop = asyncio.get_running_loop()
+
+        # Signal handler for graceful shutdown
+        def handle_signal():
+            logger.info("\n🛑 Received shutdown signal...")
+            # Close the TCP server to trigger shutdown
+            if bridge.tcp_server:
+                bridge.tcp_server.close()
+
+        # Register signal handlers with the event loop
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, handle_signal)
+
+        try:
+            await bridge.start()
+        except KeyboardInterrupt:
+            logger.info("\n🛑 Interrupted by user")
+        except Exception as e:
+            logger.error(f"❌ Bridge failed: {e}")
+            raise
+        finally:
+            # Remove signal handlers
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.remove_signal_handler(sig)
+            await bridge.stop()
+
     try:
-        asyncio.run(bridge.start())
+        asyncio.run(run_bridge())
     except KeyboardInterrupt:
-        logger.info("\n🛑 Interrupted by user")
-        bridge.stop()
+        # Already handled in run_bridge
+        pass
     except Exception as e:
         logger.error(f"❌ Bridge failed: {e}")
         sys.exit(1)
