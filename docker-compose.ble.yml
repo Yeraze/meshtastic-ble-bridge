@@ -20,7 +20,16 @@ services:
       # BLE MAC address of your Meshtastic device
       # Find it using: docker compose -f docker-compose.ble.yml run --rm ble-bridge --scan
       - BLE_ADDRESS=${BLE_ADDRESS:-}
-    command: ${BLE_ADDRESS:-}
+      # Enable node caching for better performance (optional)
+      - CACHE_NODES=${CACHE_NODES:-true}
+    command: >
+      sh -c '
+        CMD="${BLE_ADDRESS:-}"
+        if [ "$CACHE_NODES" = "true" ]; then
+          CMD="$CMD --cache-nodes"
+        fi
+        exec python3 /app/ble_tcp_bridge.py $CMD --verbose
+      '
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('127.0.0.1', 4403)); s.close()"]
       interval: 30s

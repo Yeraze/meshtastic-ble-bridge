@@ -24,12 +24,24 @@ import argparse
 import sys
 import os
 import signal
+import time
+import hashlib
 from typing import List, Optional
 from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2
 
 # Version
-__version__ = "1.3"
+__version__ = "1.5"
+
+# IMPORTANT: Config caching behavior
+# When --cache-nodes is enabled, the bridge caches the ENTIRE config response
+# including radio settings, channels, modules, and node database. This dramatically
+# improves reconnection speed but has limitations:
+#
+# ✅ WORKS WELL FOR: Messaging, monitoring, read-only usage
+# ⚠️  LIMITATIONS: Reconfiguration via the app may not work as expected since the
+#    cached config doesn't reflect real-time changes. If you need to reconfigure
+#    your device, restart the bridge or disable caching with: --cache-nodes=false
 
 # TCP Protocol constants
 START1 = 0x94
@@ -54,9 +66,10 @@ class MeshtasticBLEBridge:
     MAX_RECONNECT_DELAY = 60.0  # seconds
     RECONNECT_BACKOFF_FACTOR = 2.0
 
-    def __init__(self, ble_address: str, tcp_port: int = 4403):
+    def __init__(self, ble_address: str, tcp_port: int = 4403, cache_nodes: bool = False):
         self.ble_address = ble_address
         self.tcp_port = tcp_port
+        self.cache_nodes = cache_nodes
         self.ble_client: Optional[BleakClient] = None
 
         # Meshtastic BLE characteristic UUIDs
@@ -77,6 +90,19 @@ class MeshtasticBLEBridge:
         # Avahi service file path
         self.avahi_service_file = None
 
+        # Full config cache for replaying entire want_config response
+        # WARNING: This caches the entire config response including radio settings,
+        # channels, modules, etc. Only suitable for messaging use cases where the
+        # device config doesn't change. Reconfiguration features may not work correctly.
+        self.config_cache: list = [] if cache_nodes else None  # List of (protobuf_bytes, tcp_frame)
+        self.config_cache_complete: bool = False
+        self.recording_config: bool = False
+        self.current_config_id: Optional[int] = None
+
+        # Packet deduplication (to handle BLE notification + polling duplicates)
+        self.last_packet_hash: Optional[int] = None
+        self.last_packet_time: float = 0
+
     def on_ble_disconnect(self, client: BleakClient):
         """
         Callback invoked when BLE device disconnects.
@@ -90,6 +116,10 @@ class MeshtasticBLEBridge:
         logger.info(f"Starting BLE-TCP Bridge")
         logger.info(f"BLE Address: {self.ble_address}")
         logger.info(f"TCP Port: {self.tcp_port}")
+        if self.cache_nodes:
+            logger.info(f"Node Caching: Enabled (NodeInfo packets will be cached and replayed to new clients)")
+        else:
+            logger.info(f"Node Caching: Disabled (use --cache-nodes to enable)")
 
         self.running = True
 
@@ -99,8 +129,58 @@ class MeshtasticBLEBridge:
         # Register mDNS service for autodiscovery
         await self.register_mdns_service()
 
+        # Pre-warm cache if caching is enabled
+        if self.cache_nodes:
+            await self.prewarm_cache()
+
         # Start TCP server
         await self.start_tcp_server()
+
+    async def prewarm_cache(self):
+        """
+        Pre-warm the config cache by requesting config from the device.
+        This ensures the cache is hot before the first client connects.
+        """
+        logger.info("🔥 Pre-warming config cache...")
+
+        try:
+            # Generate a unique config ID
+            import random
+            config_id = random.randint(1, 2**32 - 1)
+
+            # Start recording the config response
+            self.recording_config = True
+            self.current_config_id = config_id
+            self.config_cache.clear()
+            self.config_cache_complete = False
+
+            # Create want_config_id request
+            to_radio = mesh_pb2.ToRadio()
+            to_radio.want_config_id = config_id
+
+            # Send to BLE device
+            await self.send_to_ble(to_radio)
+
+            logger.info(f"📨 Sent want_config_id request to device (id={config_id})")
+
+            # Wait for config_complete_id
+            max_wait = 30  # seconds
+            check_interval = 0.5  # seconds
+            waited = 0
+
+            while waited < max_wait:
+                await asyncio.sleep(check_interval)
+                waited += check_interval
+
+                # Check if config is complete
+                if self.config_cache_complete:
+                    logger.info(f"✅ Config cache pre-warmed with {len(self.config_cache)} packets")
+                    return
+
+            logger.warning(f"⚠️  Config cache pre-warming timed out after {max_wait}s (cache size: {len(self.config_cache)})")
+
+        except Exception as e:
+            logger.warning(f"⚠️  Cache pre-warming failed: {e} (bridge will continue without pre-warmed cache)")
 
     async def connect_ble(self):
         """Connect to Meshtastic device via BLE using Bleak directly."""
@@ -365,12 +445,64 @@ class MeshtasticBLEBridge:
         """
         Handle incoming packet from BLE.
         Convert to TCP frame and broadcast to all TCP clients.
+        Optionally cache NodeInfo packets for replay to new clients.
+
+        Note: Deduplicates packets since BLE may send duplicates via
+        both notifications and polling within a short time window.
         """
         try:
+            # Deduplicate packets (BLE may send same packet via notification + poll)
+            packet_hash = hash(protobuf_bytes)
+            current_time = time.time()
+
+            # If same packet within 100ms, skip it
+            if (packet_hash == self.last_packet_hash and
+                (current_time - self.last_packet_time) < 0.1):
+                logger.debug(f"⏭️  Skipping duplicate packet ({len(protobuf_bytes)} bytes)")
+                return
+
+            self.last_packet_hash = packet_hash
+            self.last_packet_time = current_time
+
             logger.debug(f"📥 BLE packet received: {len(protobuf_bytes)} bytes")
 
             # Create TCP frame
             tcp_frame = self.create_tcp_frame(protobuf_bytes)
+
+            # If config caching is enabled, record the config response stream
+            if self.config_cache is not None:
+                try:
+                    from_radio = mesh_pb2.FromRadio()
+                    from_radio.ParseFromString(protobuf_bytes)
+
+                    # Check if this is a config_complete_id - end of config stream
+                    if from_radio.HasField('config_complete_id'):
+                        if self.recording_config and from_radio.config_complete_id == self.current_config_id:
+                            # Add the config_complete packet to cache
+                            self.config_cache.append((protobuf_bytes, tcp_frame))
+                            self.config_cache_complete = True
+                            self.recording_config = False
+                            logger.info(f"✅ Config cache complete with {len(self.config_cache)} packets")
+
+                    # If we're recording, cache everything
+                    elif self.recording_config:
+                        self.config_cache.append((protobuf_bytes, tcp_frame))
+
+                        # Log what we're caching
+                        if from_radio.HasField('node_info'):
+                            logger.debug(f"💾 Cached NodeInfo for node {from_radio.node_info.num:#x}")
+                        elif from_radio.HasField('my_info'):
+                            logger.debug(f"💾 Cached MyNodeInfo")
+                        elif from_radio.HasField('config'):
+                            logger.debug(f"💾 Cached Config")
+                        elif from_radio.HasField('moduleConfig'):
+                            logger.debug(f"💾 Cached ModuleConfig")
+                        elif from_radio.HasField('channel'):
+                            logger.debug(f"💾 Cached Channel")
+
+                except Exception as parse_err:
+                    # Don't fail if parsing fails - just log and continue
+                    logger.debug(f"Failed to parse packet for caching (non-critical): {parse_err}")
 
             # Broadcast to all TCP clients
             await self.broadcast_to_tcp(tcp_frame)
@@ -442,6 +574,10 @@ class MeshtasticBLEBridge:
 
         self.tcp_clients.append(writer)
 
+        # Config cache status
+        if self.config_cache is not None and self.config_cache_complete:
+            logger.info(f"📋 Config cache ready with {len(self.config_cache)} packets (will serve on want_config_id request)")
+
         try:
             while self.running:
                 # Read TCP frame header (4 bytes)
@@ -464,6 +600,41 @@ class MeshtasticBLEBridge:
                 try:
                     to_radio = mesh_pb2.ToRadio()
                     to_radio.ParseFromString(protobuf_bytes)
+
+                    # Check if this is a want_config_id request and we have a complete cache
+                    if (self.config_cache is not None and
+                        self.config_cache_complete and
+                        to_radio.HasField('want_config_id')):
+
+                        requested_id = to_radio.want_config_id
+                        logger.info(f"🚀 Intercepting want_config_id={requested_id} - serving {len(self.config_cache)} packets from cache!")
+
+                        # Replay entire cached config response, but update the config_complete_id
+                        # to match what the client requested
+                        for i, (cached_protobuf, cached_frame) in enumerate(self.config_cache):
+                            try:
+                                # If this is the last packet (config_complete_id), update the ID
+                                if i == len(self.config_cache) - 1:
+                                    # Parse and update the config_complete_id to match the request
+                                    from_radio = mesh_pb2.FromRadio()
+                                    from_radio.ParseFromString(cached_protobuf)
+                                    from_radio.config_complete_id = requested_id
+
+                                    # Re-serialize and create new frame
+                                    updated_bytes = from_radio.SerializeToString()
+                                    updated_frame = self.create_tcp_frame(updated_bytes)
+                                    writer.write(updated_frame)
+                                else:
+                                    # Use cached frame as-is for all other packets
+                                    writer.write(cached_frame)
+
+                                await writer.drain()
+                            except Exception as cache_err:
+                                logger.warning(f"Failed to send cached config packet: {cache_err}")
+                                break
+
+                        logger.info(f"✅ Served complete config from cache with matching ID (skipped BLE request)")
+                        continue  # Don't send to BLE
 
                     # Send via BLE
                     await self.send_to_ble(to_radio)
@@ -633,6 +804,11 @@ Examples:
         action='store_true',
         help='Enable verbose logging'
     )
+    parser.add_argument(
+        '--cache-nodes',
+        action='store_true',
+        help='Cache NodeInfo packets and replay to new TCP clients (improves reconnection performance)'
+    )
 
     args = parser.parse_args()
 
@@ -652,7 +828,7 @@ Examples:
         parser.error("BLE address is required. Provide as argument or set BLE_ADDRESS environment variable (use --scan to find devices)")
 
     # Create and run bridge
-    bridge = MeshtasticBLEBridge(ble_address, args.port)
+    bridge = MeshtasticBLEBridge(ble_address, args.port, cache_nodes=args.cache_nodes)
 
     async def run_bridge():
         """Run bridge with proper shutdown handling."""
