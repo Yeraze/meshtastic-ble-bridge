@@ -142,8 +142,9 @@ Create a `.env` file in the MeshMonitor root directory:
 ```bash
 BLE_ADDRESS=AA:BB:CC:DD:EE:FF
 
-# Optional: Enable config caching for faster reconnections (v1.7+)
+# Optional: Enable config caching for faster reconnections (v1.4.0+)
 # CACHE_NODES=true
+# MAX_CACHE_NODES=500  # Optional: limit cache size (default: 500)
 ```
 
 ### Step 3: Start Both Services
@@ -209,7 +210,7 @@ avahi-browse -rt _meshtastic._tcp
 
 The mDNS service allows clients to automatically discover the bridge on the local network without needing to know the IP address.
 
-## Performance Optimization: Config Caching (v1.7+)
+## Performance Optimization: Config Caching (v1.4.0+)
 
 The bridge includes an optional config caching feature that dramatically improves reconnection speed by caching the entire device configuration (node database, settings, channels) in memory.
 
@@ -218,11 +219,12 @@ The bridge includes an optional config caching feature that dramatically improve
 **Via Docker Compose** (add to `.env`):
 ```bash
 CACHE_NODES=true
+MAX_CACHE_NODES=500  # Optional: limit cache size (default: 500)
 ```
 
 **Via Command Line**:
 ```bash
-python ble_tcp_bridge.py AA:BB:CC:DD:EE:FF --cache-nodes
+python ble_tcp_bridge.py AA:BB:CC:DD:EE:FF --cache-nodes --max-cache-nodes 500
 ```
 
 **Via Docker**:
@@ -231,7 +233,7 @@ docker run --rm --privileged --network host \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
   -v /etc/avahi/services:/etc/avahi/services \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --cache-nodes
+  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --cache-nodes --max-cache-nodes 500
 ```
 
 ### How It Works
@@ -264,8 +266,11 @@ When caching is enabled:
 **⚠️ Limitations:**
 - **Best for monitoring/messaging** - Ideal for read-heavy use cases
 - **Reconfiguration may not work** - Device settings changes require bridge restart
-- **Memory usage** - Stores ~150+ packets in RAM (typically <100KB)
+- **Memory usage** - Configurable limit (default 500 nodes, typically <100KB for small meshes)
 - **Single device** - Cache is per bridge instance
+
+**Memory Management:**
+The cache size is limited by the `MAX_CACHE_NODES` parameter to prevent unbounded growth in large mesh networks. When the limit is reached, the oldest node entries are automatically removed.
 
 ### When to Use Caching
 
@@ -309,8 +314,11 @@ This is a functional proof-of-concept that demonstrates BLE-to-TCP bridging. It 
 - ✅ Graceful shutdown with proper cleanup (v1.1)
 - ✅ Automatic BLE reconnection on disconnect (v1.2)
 - ✅ BLE_ADDRESS environment variable support (v1.2)
-- ✅ Optional config caching for faster reconnects (v1.7)
-- ✅ Dynamic cache updates for position/telemetry/user data (v1.7)
+- ✅ Automatic reconnection on node reboots (v1.3)
+- ✅ Optional config caching for faster reconnects (v1.4.0)
+- ✅ Dynamic cache updates for position/telemetry/user data (v1.4.0)
+- ✅ Configurable cache size limits (MAX_CACHE_NODES) (v1.4.0)
+- ✅ Comprehensive test suite with CI/CD (v1.4.0)
 
 **Future Enhancements:**
 - Multiple device support

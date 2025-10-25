@@ -8,9 +8,12 @@ A Docker-based bridge that exposes a TCP api to Bluetooth Low Energy (BLE) Mesht
 **Features:**
 - BLE-to-TCP protocol translation
 - Automatic reconnection on node reboots or disconnects (v1.3+)
+- Optional config caching for faster reconnections (v1.4.0+)
+- Configurable cache size limits for memory management (v1.4.0+)
 - mDNS/Avahi autodiscovery for zero-configuration networking
 - Automatic service registration and cleanup
 - Graceful shutdown with proper resource cleanup
+- Comprehensive test suite with CI/CD
 
 ## What's Included
 
@@ -86,7 +89,7 @@ The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records conta
 - `bridge=ble`
 - `port=4403`
 - `ble_address=<device-mac>`
-- `version=1.3`
+- `version=1.4.0`
 
 ## Documentation
 
