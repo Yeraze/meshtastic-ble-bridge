@@ -348,8 +348,9 @@ class TestErrorScenarios:
 
     def test_tcp_frame_too_large(self, bridge):
         """Test handling of oversized packets"""
-        # Create a packet larger than MAX_PACKET_SIZE
-        large_payload = b"x" * (bridge.MAX_PACKET_SIZE + 100)
+        # Create a packet larger than MAX_PACKET_SIZE (module-level constant)
+        max_size = 512  # MAX_PACKET_SIZE from ble_tcp_bridge module
+        large_payload = b"x" * (max_size + 100)
 
         with pytest.raises(ValueError):
             bridge.create_tcp_frame(large_payload)

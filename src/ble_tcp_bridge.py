@@ -174,12 +174,15 @@ class MeshtasticBLEBridge:
                 # Check if config is complete
                 if self.config_cache_complete:
                     logger.info(f"✅ Config cache pre-warmed with {len(self.config_cache)} packets")
+                    self.recording_config = False
                     return
 
             logger.warning(f"⚠️  Config cache pre-warming timed out after {max_wait}s (cache size: {len(self.config_cache)})")
+            self.recording_config = False
 
         except Exception as e:
             logger.warning(f"⚠️  Cache pre-warming failed: {e} (bridge will continue without pre-warmed cache)")
+            self.recording_config = False
 
     async def connect_ble(self):
         """Connect to Meshtastic device via BLE using Bleak directly."""
