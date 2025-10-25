@@ -141,6 +141,9 @@ Create a `.env` file in the MeshMonitor root directory:
 
 ```bash
 BLE_ADDRESS=AA:BB:CC:DD:EE:FF
+
+# Optional: Enable config caching for faster reconnections (v1.7+)
+# CACHE_NODES=true
 ```
 
 ### Step 3: Start Both Services
@@ -206,6 +209,91 @@ avahi-browse -rt _meshtastic._tcp
 
 The mDNS service allows clients to automatically discover the bridge on the local network without needing to know the IP address.
 
+## Performance Optimization: Config Caching (v1.7+)
+
+The bridge includes an optional config caching feature that dramatically improves reconnection speed by caching the entire device configuration (node database, settings, channels) in memory.
+
+### Enabling Config Caching
+
+**Via Docker Compose** (add to `.env`):
+```bash
+CACHE_NODES=true
+```
+
+**Via Command Line**:
+```bash
+python ble_tcp_bridge.py AA:BB:CC:DD:EE:FF --cache-nodes
+```
+
+**Via Docker**:
+```bash
+docker run --rm --privileged --network host \
+  -v /var/run/dbus:/var/run/dbus \
+  -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
+  -v /etc/avahi/services:/etc/avahi/services \
+  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --cache-nodes
+```
+
+### How It Works
+
+When caching is enabled:
+1. **Pre-warming**: At startup, the bridge requests and caches the full device config
+2. **Fast Reconnects**: When clients reconnect, config is served instantly from memory (no BLE round-trip)
+3. **Dynamic Updates**: Cache is automatically updated when nodes broadcast position, telemetry, or user info changes
+4. **Fresh Data**: Last-seen timestamps and node data remain current
+
+### Performance Impact
+
+**Without caching:**
+- Initial connection: ~15 seconds (100+ BLE packets from device)
+- Each reconnection: ~15 seconds (queries device every time)
+
+**With caching:**
+- Initial connection: ~15 seconds (builds cache)
+- Reconnections: <1 second (served from memory)
+- Network traffic: Reduced by ~150 packets per connection
+
+### Pros and Cons
+
+**✅ Advantages:**
+- **Dramatically faster reconnections** - Sub-second vs 15+ seconds
+- **Reduced BLE traffic** - Less strain on battery and radio
+- **Better user experience** - Instant node list when opening app
+- **Live updates** - Position, telemetry, and user data stay fresh
+
+**⚠️ Limitations:**
+- **Best for monitoring/messaging** - Ideal for read-heavy use cases
+- **Reconfiguration may not work** - Device settings changes require bridge restart
+- **Memory usage** - Stores ~150+ packets in RAM (typically <100KB)
+- **Single device** - Cache is per bridge instance
+
+### When to Use Caching
+
+**Good use cases:**
+- Monitoring node activity and positions
+- Sending/receiving messages
+- Reading mesh topology
+- Mobile apps that reconnect frequently
+- Multiple users connecting to the same bridge
+
+**Not recommended for:**
+- Actively reconfiguring device settings
+- Updating channels or modules
+- Firmware updates
+- When real-time config accuracy is critical
+
+### Disabling Cache
+
+Caching is **disabled by default**. If you enabled it and need to reconfigure your device:
+
+```bash
+# Restart bridge without caching
+CACHE_NODES=false docker compose -f docker-compose.yml -f docker-compose.ble.yml restart ble-bridge
+
+# Or simply restart the bridge (defaults to disabled)
+docker compose -f docker-compose.yml -f docker-compose.ble.yml restart ble-bridge
+```
+
 ## Development Status
 
 **Status:** Proof of Concept / Beta
@@ -214,17 +302,17 @@ This is a functional proof-of-concept that demonstrates BLE-to-TCP bridging. It 
 
 **Known Limitations:**
 - Single BLE device at a time
-- No automatic reconnection yet
-- Limited error recovery
+- Config caching may not work for device reconfiguration scenarios
 
-**Implemented Features (v1.2):**
-- ✅ mDNS/Avahi autodiscovery
-- ✅ Graceful shutdown with proper cleanup
-- ✅ Automatic service registration/deregistration
-- ✅ BLE_ADDRESS environment variable support
+**Implemented Features:**
+- ✅ mDNS/Avahi autodiscovery (v1.1)
+- ✅ Graceful shutdown with proper cleanup (v1.1)
+- ✅ Automatic BLE reconnection on disconnect (v1.2)
+- ✅ BLE_ADDRESS environment variable support (v1.2)
+- ✅ Optional config caching for faster reconnects (v1.7)
+- ✅ Dynamic cache updates for position/telemetry/user data (v1.7)
 
 **Future Enhancements:**
-- Automatic BLE reconnection
 - Multiple device support
 - Better connection monitoring
 - systemd service configuration

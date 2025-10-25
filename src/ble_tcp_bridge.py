@@ -28,10 +28,10 @@ import time
 import hashlib
 from typing import List, Optional
 from bleak import BleakClient, BleakScanner
-from meshtastic import mesh_pb2
+from meshtastic import mesh_pb2, telemetry_pb2
 
 # Version
-__version__ = "1.5"
+__version__ = "1.7"
 
 # IMPORTANT: Config caching behavior
 # When --cache-nodes is enabled, the bridge caches the ENTIRE config response
@@ -499,6 +499,95 @@ class MeshtasticBLEBridge:
                             logger.debug(f"💾 Cached ModuleConfig")
                         elif from_radio.HasField('channel'):
                             logger.debug(f"💾 Cached Channel")
+
+                    # If cache is complete and this is a NodeInfo packet during runtime,
+                    # update the cache to keep it fresh
+                    elif self.config_cache_complete and from_radio.HasField('node_info'):
+                        node_num = from_radio.node_info.num
+
+                        # Find and replace existing NodeInfo for this node, or add if new
+                        node_found = False
+                        for i, (cached_proto, _) in enumerate(self.config_cache[:-1]):  # Skip last (config_complete)
+                            try:
+                                cached_from_radio = mesh_pb2.FromRadio()
+                                cached_from_radio.ParseFromString(cached_proto)
+                                if cached_from_radio.HasField('node_info') and cached_from_radio.node_info.num == node_num:
+                                    # Replace with updated NodeInfo
+                                    self.config_cache[i] = (protobuf_bytes, tcp_frame)
+                                    logger.debug(f"🔄 Updated cache for node {node_num:#x}")
+                                    node_found = True
+                                    break
+                            except:
+                                continue
+
+                        # If node not found in cache, add it before config_complete
+                        if not node_found:
+                            # Insert before the last element (config_complete_id)
+                            self.config_cache.insert(-1, (protobuf_bytes, tcp_frame))
+                            logger.debug(f"➕ Added new node {node_num:#x} to cache (size: {len(self.config_cache)})")
+
+                    # If cache is complete and this is a MeshPacket with Position/Telemetry/User data,
+                    # update the corresponding NodeInfo in the cache
+                    elif self.config_cache_complete and from_radio.HasField('packet'):
+                        packet = from_radio.packet
+                        node_num = getattr(packet, 'from')  # 'from' is a reserved keyword, use getattr()
+
+                        # Check if packet has decoded data we care about
+                        if packet.HasField('decoded'):
+                            decoded = packet.decoded
+                            update_type = None
+
+                            # Determine what type of update this is
+                            if decoded.portnum == 3:  # POSITION_APP
+                                update_type = "position"
+                            elif decoded.portnum == 67:  # TELEMETRY_APP
+                                update_type = "telemetry"
+                            elif decoded.portnum == 4:  # NODEINFO_APP
+                                update_type = "user"
+
+                            # If this is an update we care about, find and update the cached NodeInfo
+                            if update_type and node_num:
+                                for i, (cached_proto, _) in enumerate(self.config_cache[:-1]):
+                                    try:
+                                        cached_from_radio = mesh_pb2.FromRadio()
+                                        cached_from_radio.ParseFromString(cached_proto)
+
+                                        if cached_from_radio.HasField('node_info') and cached_from_radio.node_info.num == node_num:
+                                            # Update the specific field in the cached NodeInfo
+                                            if update_type == "position":
+                                                # Parse position from packet payload
+                                                position = mesh_pb2.Position()
+                                                position.ParseFromString(decoded.payload)
+                                                cached_from_radio.node_info.position.CopyFrom(position)
+                                                logger.debug(f"📍 Updated position for node {node_num:#x}")
+
+                                            elif update_type == "telemetry":
+                                                # Parse telemetry from packet payload
+                                                telemetry = telemetry_pb2.Telemetry()
+                                                telemetry.ParseFromString(decoded.payload)
+                                                if telemetry.HasField('device_metrics'):
+                                                    cached_from_radio.node_info.device_metrics.CopyFrom(telemetry.device_metrics)
+                                                    logger.debug(f"🔋 Updated telemetry for node {node_num:#x}")
+
+                                            elif update_type == "user":
+                                                # Parse user from packet payload
+                                                user = mesh_pb2.User()
+                                                user.ParseFromString(decoded.payload)
+                                                cached_from_radio.node_info.user.CopyFrom(user)
+                                                logger.debug(f"👤 Updated user for node {node_num:#x}")
+
+                                            # Update last_heard timestamp (current time)
+                                            cached_from_radio.node_info.last_heard = int(time.time())
+
+                                            # Re-serialize and update cache
+                                            updated_bytes = cached_from_radio.SerializeToString()
+                                            updated_frame = self.create_tcp_frame(updated_bytes)
+                                            self.config_cache[i] = (updated_bytes, updated_frame)
+                                            break
+
+                                    except Exception as e:
+                                        logger.debug(f"Failed to update cache with {update_type}: {e}")
+                                        continue
 
                 except Exception as parse_err:
                     # Don't fail if parsing fails - just log and continue
