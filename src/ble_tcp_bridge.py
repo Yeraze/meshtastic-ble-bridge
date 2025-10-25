@@ -25,7 +25,6 @@ import sys
 import os
 import signal
 import time
-import hashlib
 from typing import List, Optional
 from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2, telemetry_pb2
@@ -315,6 +314,10 @@ class MeshtasticBLEBridge:
                 # Attempt reconnection (this will reset reconnect_attempts to 0 on success)
                 await self.connect_ble()
 
+                # Re-warm cache if caching is enabled (device needs want_config to start sending data)
+                if self.cache_nodes:
+                    await self.prewarm_cache()
+
                 logger.info(f"✅ Reconnected successfully after {current_attempt} attempt(s)")
                 self.is_reconnecting = False
                 return True
@@ -517,7 +520,8 @@ class MeshtasticBLEBridge:
                                     logger.debug(f"🔄 Updated cache for node {node_num:#x}")
                                     node_found = True
                                     break
-                            except:
+                            except Exception as e:
+                                logger.debug(f"Failed to check cached node: {e}")
                                 continue
 
                         # If node not found in cache, add it before config_complete
