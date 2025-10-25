@@ -16,11 +16,23 @@ services:
     volumes:
       - /var/run/dbus:/var/run/dbus  # Required for D-Bus/Bluetooth access
       - /var/lib/bluetooth:/var/lib/bluetooth:ro  # Pairing information
+      - /etc/avahi/services:/etc/avahi/services  # mDNS service registration (optional)
     environment:
       # BLE MAC address of your Meshtastic device
       # Find it using: docker compose -f docker-compose.ble.yml run --rm ble-bridge --scan
       - BLE_ADDRESS=${BLE_ADDRESS:-}
-    command: ${BLE_ADDRESS:-}
+      # Enable node caching for better performance (optional, disabled by default)
+      - CACHE_NODES=${CACHE_NODES:-false}
+      # Maximum number of nodes to cache (default: 500, prevents unbounded memory growth)
+      - MAX_CACHE_NODES=${MAX_CACHE_NODES:-500}
+    command: >
+      sh -c '
+        CMD="${BLE_ADDRESS:-}"
+        if [ "$CACHE_NODES" = "true" ]; then
+          CMD="$CMD --cache-nodes"
+        fi
+        exec python3 /app/ble_tcp_bridge.py $CMD --verbose
+      '
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('127.0.0.1', 4403)); s.close()"]
       interval: 30s
