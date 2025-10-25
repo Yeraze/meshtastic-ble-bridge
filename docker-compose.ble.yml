@@ -23,6 +23,8 @@ services:
       - BLE_ADDRESS=${BLE_ADDRESS:-}
       # Enable node caching for better performance (optional, disabled by default)
       - CACHE_NODES=${CACHE_NODES:-false}
+      # Maximum number of nodes to cache (default: 500, prevents unbounded memory growth)
+      - MAX_CACHE_NODES=${MAX_CACHE_NODES:-500}
     command: >
       sh -c '
         CMD="${BLE_ADDRESS:-}"

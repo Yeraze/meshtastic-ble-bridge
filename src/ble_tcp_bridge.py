@@ -30,7 +30,7 @@ from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2, telemetry_pb2
 
 # Version
-__version__ = "1.7"
+__version__ = "1.4.0"
 
 # IMPORTANT: Config caching behavior
 # When --cache-nodes is enabled, the bridge caches the ENTIRE config response
@@ -65,10 +65,11 @@ class MeshtasticBLEBridge:
     MAX_RECONNECT_DELAY = 60.0  # seconds
     RECONNECT_BACKOFF_FACTOR = 2.0
 
-    def __init__(self, ble_address: str, tcp_port: int = 4403, cache_nodes: bool = False):
+    def __init__(self, ble_address: str, tcp_port: int = 4403, cache_nodes: bool = False, max_cache_nodes: int = 500):
         self.ble_address = ble_address
         self.tcp_port = tcp_port
         self.cache_nodes = cache_nodes
+        self.max_cache_nodes = max_cache_nodes
         self.ble_client: Optional[BleakClient] = None
 
         # Meshtastic BLE characteristic UUIDs
@@ -116,7 +117,7 @@ class MeshtasticBLEBridge:
         logger.info(f"BLE Address: {self.ble_address}")
         logger.info(f"TCP Port: {self.tcp_port}")
         if self.cache_nodes:
-            logger.info(f"Node Caching: Enabled (NodeInfo packets will be cached and replayed to new clients)")
+            logger.info(f"Node Caching: Enabled (max {self.max_cache_nodes} nodes)")
         else:
             logger.info(f"Node Caching: Disabled (use --cache-nodes to enable)")
 
@@ -488,6 +489,38 @@ class MeshtasticBLEBridge:
                             self.config_cache.append((protobuf_bytes, tcp_frame))
                             self.config_cache_complete = True
                             self.recording_config = False
+
+                            # Enforce cache size limit by counting node_info packets
+                            node_count = 0
+                            for proto, _ in self.config_cache:
+                                try:
+                                    temp_radio = mesh_pb2.FromRadio()
+                                    temp_radio.ParseFromString(proto)
+                                    if temp_radio.HasField('node_info'):
+                                        node_count += 1
+                                except Exception:
+                                    pass
+
+                            if node_count > self.max_cache_nodes:
+                                # Remove oldest node_info entries until we're under the limit
+                                nodes_to_remove = node_count - self.max_cache_nodes
+                                new_cache = []
+                                nodes_removed = 0
+
+                                for proto, frame in self.config_cache:
+                                    try:
+                                        temp_radio = mesh_pb2.FromRadio()
+                                        temp_radio.ParseFromString(proto)
+                                        if temp_radio.HasField('node_info') and nodes_removed < nodes_to_remove:
+                                            nodes_removed += 1
+                                            continue  # Skip this node
+                                    except Exception:
+                                        pass  # Keep non-parseable packets
+                                    new_cache.append((proto, frame))
+
+                                self.config_cache = new_cache
+                                logger.warning(f"⚠️  Cache size limit reached: removed {nodes_removed} oldest nodes (limit: {self.max_cache_nodes})")
+
                             logger.info(f"✅ Config cache complete with {len(self.config_cache)} packets")
 
                     # If we're recording, cache everything
@@ -905,6 +938,12 @@ Examples:
         action='store_true',
         help='Cache NodeInfo packets and replay to new TCP clients (improves reconnection performance)'
     )
+    parser.add_argument(
+        '--max-cache-nodes',
+        type=int,
+        default=500,
+        help='Maximum number of nodes to cache (default: 500, prevents unbounded memory growth)'
+    )
 
     args = parser.parse_args()
 
@@ -923,8 +962,16 @@ Examples:
     if not ble_address:
         parser.error("BLE address is required. Provide as argument or set BLE_ADDRESS environment variable (use --scan to find devices)")
 
+    # Get max_cache_nodes from env var if set (for Docker compatibility)
+    max_cache_nodes = args.max_cache_nodes
+    if 'MAX_CACHE_NODES' in os.environ:
+        try:
+            max_cache_nodes = int(os.environ['MAX_CACHE_NODES'])
+        except ValueError:
+            logger.warning(f"Invalid MAX_CACHE_NODES value: {os.environ['MAX_CACHE_NODES']}, using default: {args.max_cache_nodes}")
+
     # Create and run bridge
-    bridge = MeshtasticBLEBridge(ble_address, args.port, cache_nodes=args.cache_nodes)
+    bridge = MeshtasticBLEBridge(ble_address, args.port, cache_nodes=args.cache_nodes, max_cache_nodes=max_cache_nodes)
 
     async def run_bridge():
         """Run bridge with proper shutdown handling."""
