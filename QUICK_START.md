@@ -15,25 +15,25 @@ sudo systemctl status bluetooth
 sudo systemctl start bluetooth
 ```
 
-## Step 2: Build the Container
+## Step 2: Pull the Prebuilt Image
 
 ```bash
-cd src
-docker build -t meshmonitor-ble-bridge .
+docker pull ghcr.io/yeraze/meshtastic-ble-bridge:latest
 ```
 
 Expected output:
 ```
-Successfully built <image-id>
-Successfully tagged meshmonitor-ble-bridge:latest
+latest: Pulling from yeraze/meshtastic-ble-bridge
+...
+Status: Downloaded newer image for ghcr.io/yeraze/meshtastic-ble-bridge:latest
 ```
 
 ## Step 3: Scan for Your Meshtastic Device
 
 ```bash
-docker run --rm --privileged --network host \
+docker run --rm --privileged \
   -v /var/run/dbus:/var/run/dbus \
-  meshmonitor-ble-bridge --scan
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest --scan
 ```
 
 Example output:
@@ -72,11 +72,12 @@ Replace `AA:BB:CC:DD:EE:FF` with your device's MAC address:
 
 ```bash
 docker run -d --name ble-bridge \
-  --privileged --network host \
+  --privileged \
+  -p 4403:4403 \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest AA:BB:CC:DD:EE:FF
 ```
 
 ## Step 6: Verify It's Running
@@ -133,10 +134,13 @@ docker logs ble-bridge
 
 ### Can't connect from MeshMonitor?
 ```bash
-# Check bridge is listening
-docker exec ble-bridge netstat -tln | grep 4403
+# Check bridge container is running
+docker ps | grep ble-bridge
 
-# Should show: tcp 0 0 0.0.0.0:4403 0.0.0.0:* LISTEN
+# Check port is exposed
+docker port ble-bridge
+
+# Should show: 4403/tcp -> 0.0.0.0:4403
 
 # Check firewall
 sudo ufw status
@@ -150,11 +154,12 @@ docker stop ble-bridge
 docker rm ble-bridge
 
 docker run -d --name ble-bridge \
-  --privileged --network host \
+  --privileged \
+  -p 4403:4403 \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --verbose
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest AA:BB:CC:DD:EE:FF --verbose
 
 # Watch logs
 docker logs -f ble-bridge
