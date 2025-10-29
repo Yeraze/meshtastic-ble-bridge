@@ -6,12 +6,11 @@
 
 services:
   ble-bridge:
-    build:
-      context: ./src
-      dockerfile: Dockerfile
+    image: ghcr.io/yeraze/meshtastic-ble-bridge:latest
     container_name: meshmonitor-ble-bridge
     privileged: true  # Required for BLE hardware access
-    network_mode: host  # Allows localhost TCP communication with meshmonitor
+    ports:
+      - "4403:4403"  # Expose TCP bridge port
     restart: unless-stopped
     volumes:
       - /var/run/dbus:/var/run/dbus  # Required for D-Bus/Bluetooth access
@@ -34,7 +33,7 @@ services:
         exec python3 /app/ble_tcp_bridge.py $CMD --verbose
       '
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('127.0.0.1', 4403)); s.close()"]
+      test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('localhost', 4403)); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -43,8 +42,8 @@ services:
   # Override meshmonitor service to connect to BLE bridge
   meshmonitor:
     environment:
-      # Configure MeshMonitor to connect to the BLE bridge
-      - MESHTASTIC_NODE_IP=localhost
+      # Configure MeshMonitor to connect to the BLE bridge via Docker network
+      - MESHTASTIC_NODE_IP=ble-bridge
       - MESHTASTIC_NODE_PORT=4403
     depends_on:
       ble-bridge:

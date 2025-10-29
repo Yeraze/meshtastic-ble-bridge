@@ -1,6 +1,6 @@
 # Deploy BLE Bridge Container
 
-This file contains the MeshMonitor BLE-to-TCP bridge Docker image.
+This guide shows how to deploy the MeshMonitor BLE-to-TCP bridge using the prebuilt Docker image.
 
 ## Requirements
 
@@ -10,25 +10,26 @@ This file contains the MeshMonitor BLE-to-TCP bridge Docker image.
 
 ## Installation
 
-### 1. Load the Docker Image
+### 1. Pull the Docker Image
 
 ```bash
-docker load -i meshmonitor-ble-bridge.tar
+docker pull ghcr.io/yeraze/meshtastic-ble-bridge:latest
 ```
 
 You should see:
 ```
-Loaded image: meshmonitor-ble-bridge:latest
+latest: Pulling from yeraze/meshtastic-ble-bridge
+...
+Status: Downloaded newer image for ghcr.io/yeraze/meshtastic-ble-bridge:latest
 ```
 
 ### 2. Find Your Meshtastic Device
 
 ```bash
-docker run --rm --privileged --network host \
+docker run --rm --privileged \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
-  -v /etc/avahi/services:/etc/avahi/services \
-  meshmonitor-ble-bridge --scan
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest --scan
 ```
 
 Output will show devices like:
@@ -67,12 +68,13 @@ Once paired, the container will reuse this pairing information via D-Bus.
 
 ```bash
 docker run -d --name ble-bridge \
-  --privileged --network host \
+  --privileged \
+  -p 4403:4403 \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
   -v /etc/avahi/services:/etc/avahi/services \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest AA:BB:CC:DD:EE:FF
 ```
 
 Replace `AA:BB:CC:DD:EE:FF` with your device's MAC address from step 2.
@@ -81,6 +83,9 @@ Replace `AA:BB:CC:DD:EE:FF` with your device's MAC address from step 2.
 - `/var/run/dbus` - Required for Bluetooth D-Bus communication
 - `/var/lib/bluetooth` - Pairing information (read-only)
 - `/etc/avahi/services` - mDNS service registration for autodiscovery
+
+**Port Exposure:**
+- `-p 4403:4403` - Exposes the TCP bridge port to the host
 
 ### 4. Verify It's Running
 
@@ -183,12 +188,13 @@ sudo systemctl restart bluetooth
 
 # Try again
 docker run -d --name ble-bridge \
-  --privileged --network host \
+  --privileged \
+  -p 4403:4403 \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
   -v /etc/avahi/services:/etc/avahi/services \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --verbose
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest AA:BB:CC:DD:EE:FF --verbose
 ```
 
 ### View Detailed Logs
@@ -206,19 +212,20 @@ docker rm ble-bridge
 
 ## Custom TCP Port
 
-If port 4403 is already in use:
+If port 4403 is already in use on the host:
 
 ```bash
 docker run -d --name ble-bridge \
-  --privileged --network host \
+  --privileged \
+  -p 14403:4403 \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
   -v /etc/avahi/services:/etc/avahi/services \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF --port 14403
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest AA:BB:CC:DD:EE:FF
 ```
 
-Then configure MeshMonitor with `MESHTASTIC_NODE_PORT=14403`
+This maps host port 14403 to container port 4403. Then configure MeshMonitor with `MESHTASTIC_NODE_PORT=14403`
 
 **Note:** The mDNS service will automatically advertise the custom port in its TXT records.
 

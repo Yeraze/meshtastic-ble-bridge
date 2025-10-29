@@ -40,17 +40,16 @@ meshmonitor-ble-bridge/
 - Bluetooth adapter (built-in or USB)
 - Meshtastic device with BLE enabled
 
-### 1. Build the Container
+### 1. Pull the Container
 ```bash
-cd src
-docker build -t meshmonitor-ble-bridge .
+docker pull ghcr.io/yeraze/meshtastic-ble-bridge:latest
 ```
 
 ### 2. Find Your Device
 ```bash
-docker run --rm --privileged --network host \
+docker run --rm --privileged \
   -v /var/run/dbus:/var/run/dbus \
-  meshmonitor-ble-bridge --scan
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest --scan
 ```
 
 ### 3. Pair Your Device (if required)
@@ -64,12 +63,13 @@ exit
 ### 4. Start the Bridge
 ```bash
 docker run -d --name ble-bridge \
-  --privileged --network host \
+  --privileged \
+  -p 4403:4403 \
   --restart unless-stopped \
   -v /var/run/dbus:/var/run/dbus \
   -v /var/lib/bluetooth:/var/lib/bluetooth:ro \
   -v /etc/avahi/services:/etc/avahi/services \
-  meshmonitor-ble-bridge AA:BB:CC:DD:EE:FF
+  ghcr.io/yeraze/meshtastic-ble-bridge:latest AA:BB:CC:DD:EE:FF
 ```
 
 The bridge will automatically register an mDNS service for network autodiscovery.
