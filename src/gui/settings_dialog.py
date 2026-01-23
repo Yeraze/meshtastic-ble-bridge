@@ -39,7 +39,7 @@ class SettingsDialog:
 
         self.root = tk.Tk()
         self.root.title("Meshtastic Bridge Settings")
-        self.root.geometry("600x650")
+        self.root.geometry("600x720")
         self.root.resizable(False, False)
 
         # Bring to front
