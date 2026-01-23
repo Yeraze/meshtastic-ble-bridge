@@ -30,6 +30,9 @@ class MeshtasticBridge:
 
         self.running = False
 
+        # Callback for reconnection failure
+        self.on_reconnection_failed = None
+
         # Wire up event handlers
         self.ble.on_packet_received = self._handle_ble_packet
         self.ble.on_disconnected = self._handle_ble_disconnect
@@ -174,6 +177,11 @@ class MeshtasticBridge:
 
         # All attempts exhausted
         logger.error("💀 Failed to reconnect to BLE device after all attempts")
+
+        # Notify GUI/callback if registered
+        if self.on_reconnection_failed:
+            self.on_reconnection_failed()
+
         # Let container orchestration handle restart
 
     def get_statistics(self):
@@ -197,3 +205,12 @@ class MeshtasticBridge:
             callback: Previously registered callback
         """
         self.stats.unregister_callback(callback)
+
+    def register_failure_callback(self, callback):
+        """
+        Register callback for reconnection failure.
+
+        Args:
+            callback: Callable with no arguments, called when all reconnection attempts fail
+        """
+        self.on_reconnection_failed = callback

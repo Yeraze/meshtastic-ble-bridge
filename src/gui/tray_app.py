@@ -148,21 +148,24 @@ class TrayApplication:
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
 
-    def _create_icon_image(self, connected: bool = False):
+    def _create_icon_image(self, state: str = 'disconnected'):
         """
         Create tray icon image.
 
         Args:
-            connected: True for green (connected), False for gray (disconnected)
+            state: 'connected' (green), 'disconnected' (gray), or 'error' (red)
         """
         width = 64
         height = 64
 
         # Colors
-        if connected:
+        if state == 'connected':
             bg_color = (34, 139, 34)  # Green
             fg_color = (255, 255, 255)  # White
-        else:
+        elif state == 'error':
+            bg_color = (200, 50, 50)  # Red
+            fg_color = (255, 255, 255)  # White
+        else:  # disconnected
             bg_color = (128, 128, 128)  # Gray
             fg_color = (220, 220, 220)  # Light gray
 
@@ -309,15 +312,16 @@ Cache Hits: {stats.cache_hits}"""
                 max_cache_nodes=self.config.get('max_cache_nodes', 500)
             )
 
-            # Register stats callback
+            # Register callbacks
             self.bridge.register_stats_callback(self._on_stats_update)
+            self.bridge.register_failure_callback(self._on_reconnection_failed)
 
             # Start bridge (but don't serve_forever yet - just initialize)
             await self.bridge.start()
 
             # Update icon
             if self.icon:
-                self.icon.icon = self._create_icon_image(connected=True)
+                self.icon.icon = self._create_icon_image(state='connected')
                 self.icon.menu = self._create_menu()
 
             self._show_notification("Connected", f"Connected to {self.config['ble_address']}")
@@ -343,7 +347,7 @@ Cache Hits: {stats.cache_hits}"""
 
         # Update icon
         if self.icon:
-            self.icon.icon = self._create_icon_image(connected=False)
+            self.icon.icon = self._create_icon_image(state='disconnected')
             self.icon.menu = self._create_menu()
 
         self._show_notification("Disconnected", "Bridge stopped")
@@ -358,6 +362,20 @@ Cache Hits: {stats.cache_hits}"""
     def _on_stats_update(self, stats: BridgeStatistics):
         """Handle statistics update from bridge"""
         self.last_stats = stats
+
+    def _on_reconnection_failed(self):
+        """Handle reconnection failure - all attempts exhausted"""
+        logger.warning("All reconnection attempts failed, setting icon to error state")
+
+        # Update icon to red
+        if self.icon:
+            self.icon.icon = self._create_icon_image(state='error')
+
+        # Show notification
+        self._show_notification(
+            "Connection Failed",
+            "Failed to reconnect after device reboot. Bridge stopped."
+        )
 
     def _view_logs(self, icon=None, item=None):
         """Open log file"""
@@ -407,7 +425,7 @@ Cache Hits: {stats.cache_hits}"""
         self.loop_thread.start()
 
         # Create tray icon
-        icon_image = self._create_icon_image(connected=False)
+        icon_image = self._create_icon_image(state='disconnected')
         self.icon = pystray.Icon(
             "Meshtastic Bridge",
             icon_image,
