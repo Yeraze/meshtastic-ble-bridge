@@ -30,7 +30,7 @@ def main():
     logger.info("=" * 60)
 
     try:
-        from .tray_app import TrayApplication
+        from gui.tray_app import TrayApplication
 
         app = TrayApplication()
         app.run()

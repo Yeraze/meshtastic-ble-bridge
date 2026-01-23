@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from core.bridge import MeshtasticBridge
 from core.stats import BridgeStatistics
-from .settings_dialog import SettingsDialog
+from gui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
 
