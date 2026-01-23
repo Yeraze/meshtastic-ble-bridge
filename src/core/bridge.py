@@ -146,9 +146,26 @@ class MeshtasticBridge:
             reconnected = await self.ble.attempt_reconnection()
 
             if reconnected:
+                logger.info("✅ Reconnected to BLE device, re-initializing connection...")
+
                 # Re-warm cache if enabled
                 if self.cache.enabled:
                     await self.cache.prewarm(self._send_to_ble_raw)
+                else:
+                    # Even without cache, send want_config_id to initialize connection
+                    # This triggers the device to send its config, nodes, channels, etc.
+                    try:
+                        from meshtastic import mesh_pb2
+                        import random
+
+                        to_radio = mesh_pb2.ToRadio()
+                        to_radio.want_config_id = random.randint(1, 2**32 - 1)
+
+                        await self._send_to_ble_raw(to_radio.SerializeToString())
+                        logger.info("📨 Sent want_config_id to re-initialize device connection")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to send want_config_id: {e}")
+
                 return
 
             # If not the last attempt, continue to next retry
