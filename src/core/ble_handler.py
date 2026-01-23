@@ -57,6 +57,8 @@ class BLEHandler:
             # During reconnection, scan to refresh Windows BLE cache
             # Use longer timeout for reconnection - Windows BLE can be slow to rediscover devices
             scan_timeout = 2.0 if self._initial_connect else 10.0
+            discovered_device = None
+
             try:
                 logger.debug(f"Scanning for device (timeout: {scan_timeout}s)...")
                 devices = await BleakScanner.discover(timeout=scan_timeout, return_adv=True)
@@ -65,6 +67,7 @@ class BLEHandler:
                 for device_addr, (device, adv_data) in devices.items():
                     if device.address.upper() == self.ble_address.upper():
                         device_found = True
+                        discovered_device = device  # Save the device object
                         logger.info(f"✅ Device found in scan: {device.name}")
                         break
 
@@ -83,7 +86,13 @@ class BLEHandler:
                 logger.debug(f"Scan check failed (this is OK): {scan_err}")
 
             # Create BleakClient
-            self.client = BleakClient(self.ble_address, timeout=20.0)
+            # Use discovered device object if available (fresher than cached MAC address)
+            if discovered_device:
+                logger.debug("Creating client from discovered device object")
+                self.client = BleakClient(discovered_device, timeout=20.0)
+            else:
+                logger.debug("Creating client from MAC address")
+                self.client = BleakClient(self.ble_address, timeout=20.0)
 
             # Connect (with timeout to fail fast during device reboot)
             try:
