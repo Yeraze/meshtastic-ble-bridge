@@ -20,7 +20,8 @@ services:
       # Find it using: docker compose run --rm ble-bridge --scan
       # To change: Edit the address below or override with BLE_ADDRESS environment variable
       - BLE_ADDRESS=48:CA:43:59:4C:71
-    command: --verbose
+    entrypoint: ["sh", "-c"]
+    command: ["python -m cli.main $$BLE_ADDRESS --verbose"]
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('localhost', 4403)); s.close()"]
       interval: 30s

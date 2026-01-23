@@ -1,0 +1,11 @@
+# GUI dependencies for Windows
+-r requirements.txt
+
+# System tray support
+pystray==0.19.5
+
+# Image manipulation for icons
+Pillow==10.2.0
+
+# Windows integration (optional but recommended)
+pywin32==306; platform_system=="Windows"
