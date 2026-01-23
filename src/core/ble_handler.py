@@ -184,13 +184,30 @@ class BLEHandler:
                 # Check if still connected
                 if not self.client or not self.client.is_connected:
                     logger.warning("⚠️  BLE connection lost during polling")
-                    reconnected = await self.attempt_reconnection()
-                    if not reconnected:
-                        logger.error("💀 Failed to reconnect, exiting polling loop")
-                        self.running = False  # Mark as not running
+
+                    # Wait for bridge's disconnect handler to complete reconnection
+                    # Don't call attempt_reconnection() ourselves - let the callback handle it
+                    logger.debug("⏸️  Waiting for reconnection to complete...")
+                    max_wait = 250  # Allow time for all 5 reconnection attempts
+                    waited = 0
+
+                    while waited < max_wait and self.running:
+                        # Check if we're back online
+                        if self.client and self.client.is_connected:
+                            logger.info("✅ Reconnection completed, resuming polling")
+                            break
+
+                        # Still disconnected, wait a bit more
+                        await asyncio.sleep(1)
+                        waited += 1
+
+                    # Check final state
+                    if not self.client or not self.client.is_connected:
+                        logger.error("💀 Reconnection failed after waiting, exiting polling loop")
+                        self.running = False
                         break
+
                     # Reconnection succeeded, continue polling
-                    logger.debug("🔄 Resuming polling after successful reconnection")
                     continue
 
                 # Read from FromRadio characteristic
