@@ -3,7 +3,15 @@
 [![Docker Image](https://ghcr-badge.egpl.dev/yeraze/meshtastic-ble-bridge/latest_tag?color=%235b4566&ignore=latest,main&label=version&trim=)](https://github.com/Yeraze/meshmonitor/pkgs/container/meshtastic-ble-bridge)
 [![Docker Pulls](https://ghcr-badge.egpl.dev/yeraze/meshtastic-ble-bridge/size?color=%235b4566&tag=latest&label=image%20size&trim=)](https://github.com/Yeraze/meshmonitor/pkgs/container/meshtastic-ble-bridge)
 
-A Docker-based bridge that exposes a TCP api to Bluetooth Low Energy (BLE) Meshtastic devices. Designed for use with MeshMonitor, but works with any tool that supports the Meshtastic TCP interface.
+A cross-platform bridge that exposes a TCP API to Bluetooth Low Energy (BLE) Meshtastic devices. Available as a Docker container for Linux or native Windows application with system tray interface. Designed for use with MeshMonitor, but works with any tool that supports the Meshtastic TCP interface.
+
+## Platform Support
+
+| Platform | Status | Interface | Download |
+|----------|--------|-----------|----------|
+| **Linux** | ✅ Stable | Docker | `ghcr.io/yeraze/meshtastic-ble-bridge` |
+| **Windows** | ✅ Stable | GUI (System Tray) | [Releases](https://github.com/Yeraze/meshtastic-ble-bridge/releases) |
+| macOS | 🔜 Planned | TBD | Coming soon |
 
 **Features:**
 - BLE-to-TCP protocol translation
@@ -91,9 +99,30 @@ The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records conta
 - `ble_address=<device-mac>`
 - `version=1.4.0`
 
+## Windows Quick Start
+
+### Download
+1. Download `MeshtasticBLEBridge-Windows-vX.X.X.zip` from [Releases](https://github.com/Yeraze/meshtastic-ble-bridge/releases)
+2. Extract `MeshtasticBLEBridge.exe`
+
+### Pair Device
+1. Open **Settings** → **Bluetooth & devices** → **Add device**
+2. Select your Meshtastic device and pair
+3. Note the MAC address (e.g., `48:CA:43:59:4C:71`)
+
+### Run
+1. Run `MeshtasticBLEBridge.exe`
+2. Find tray icon (bottom-right corner)
+3. Right-click → **Settings**
+4. Enter BLE MAC address
+5. Right-click → **Connect**
+
+**See [Windows GUI Guide](docs/WINDOWS_GUI.md) for detailed instructions**
+
 ## Documentation
 
-- **Quick Start:** See `QUICK_START.md` for step-by-step setup
+- **Windows GUI:** See `docs/WINDOWS_GUI.md` for Windows application guide
+- **Quick Start:** See `QUICK_START.md` for Linux/Docker step-by-step setup
 - **Deployment:** See `docs/DEPLOY_BLE_BRIDGE.md` for production deployment
 - **User Guide:** See `docs/README_BLE_BRIDGE.md` for usage and troubleshooting
 - **Technical Details:** See `docs/CLAUDE_BLE_BRIDGE.md` for architecture and development

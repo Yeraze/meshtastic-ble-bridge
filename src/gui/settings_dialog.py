@@ -1,0 +1,293 @@
+"""Settings dialog for Windows GUI"""
+import tkinter as tk
+from tkinter import ttk, messagebox
+from typing import Callable, Dict
+import re
+
+
+class SettingsDialog:
+    """Configuration dialog for bridge settings"""
+
+    def __init__(self, config: Dict, on_save: Callable):
+        """
+        Initialize settings dialog.
+
+        Args:
+            config: Current configuration dictionary
+            on_save: Callback when settings are saved (receives updated config)
+        """
+        self.config = config.copy()
+        self.on_save = on_save
+
+        self.root = tk.Tk()
+        self.root.title("Meshtastic Bridge Settings")
+        self.root.geometry("500x450")
+        self.root.resizable(False, False)
+
+        # Make dialog modal-like
+        self.root.transient()
+        self.root.grab_set()
+
+        self._create_widgets()
+
+        # Center window
+        self.root.update_idletasks()
+        x = (self.root.winfo_screenwidth() // 2) - (self.root.winfo_width() // 2)
+        y = (self.root.winfo_screenheight() // 2) - (self.root.winfo_height() // 2)
+        self.root.geometry(f"+{x}+{y}")
+
+    def _create_widgets(self):
+        """Create dialog widgets"""
+        # Main frame with padding
+        main_frame = ttk.Frame(self.root, padding="15")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        row = 0
+
+        # Title
+        title_label = ttk.Label(
+            main_frame,
+            text="Bridge Configuration",
+            font=('Arial', 12, 'bold')
+        )
+        title_label.grid(row=row, column=0, columnspan=2, pady=(0, 15), sticky=tk.W)
+        row += 1
+
+        # BLE Address
+        ttk.Label(main_frame, text="BLE MAC Address:").grid(
+            row=row, column=0, sticky=tk.W, pady=5
+        )
+        self.ble_address_var = tk.StringVar(value=self.config.get('ble_address', ''))
+        ble_entry = ttk.Entry(
+            main_frame,
+            textvariable=self.ble_address_var,
+            width=30,
+            font=('Courier', 10)
+        )
+        ble_entry.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
+        row += 1
+
+        # Format hint
+        ttk.Label(
+            main_frame,
+            text="Format: AA:BB:CC:DD:EE:FF",
+            font=('Arial', 8),
+            foreground='gray'
+        ).grid(row=row, column=1, sticky=tk.W)
+        row += 1
+
+        # Separator
+        ttk.Separator(main_frame, orient='horizontal').grid(
+            row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=15
+        )
+        row += 1
+
+        # TCP Port
+        ttk.Label(main_frame, text="TCP Port:").grid(
+            row=row, column=0, sticky=tk.W, pady=5
+        )
+        self.tcp_port_var = tk.IntVar(value=self.config.get('tcp_port', 4403))
+        port_entry = ttk.Entry(main_frame, textvariable=self.tcp_port_var, width=10)
+        port_entry.grid(row=row, column=1, sticky=tk.W, pady=5)
+        row += 1
+
+        ttk.Label(
+            main_frame,
+            text="Default: 4403",
+            font=('Arial', 8),
+            foreground='gray'
+        ).grid(row=row, column=1, sticky=tk.W)
+        row += 1
+
+        # Separator
+        ttk.Separator(main_frame, orient='horizontal').grid(
+            row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=15
+        )
+        row += 1
+
+        # Cache settings header
+        ttk.Label(
+            main_frame,
+            text="Config Caching",
+            font=('Arial', 10, 'bold')
+        ).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+        row += 1
+
+        # Enable cache checkbox
+        self.cache_enabled_var = tk.BooleanVar(
+            value=self.config.get('cache_enabled', True)
+        )
+        cache_check = ttk.Checkbutton(
+            main_frame,
+            text="Enable config caching (faster reconnections)",
+            variable=self.cache_enabled_var,
+            command=self._on_cache_toggle
+        )
+        cache_check.grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=5)
+        row += 1
+
+        # Max cache nodes
+        self.max_nodes_label = ttk.Label(main_frame, text="Max cached nodes:")
+        self.max_nodes_label.grid(row=row, column=0, sticky=tk.W, pady=5)
+
+        self.max_cache_nodes_var = tk.IntVar(
+            value=self.config.get('max_cache_nodes', 500)
+        )
+        self.max_nodes_entry = ttk.Entry(
+            main_frame,
+            textvariable=self.max_cache_nodes_var,
+            width=10
+        )
+        self.max_nodes_entry.grid(row=row, column=1, sticky=tk.W, pady=5)
+        row += 1
+
+        # Cache warning
+        self.cache_warning = ttk.Label(
+            main_frame,
+            text="⚠ Caching may interfere with device reconfiguration",
+            font=('Arial', 8),
+            foreground='#d97706'
+        )
+        self.cache_warning.grid(row=row, column=0, columnspan=2, sticky=tk.W)
+        row += 1
+
+        # Separator
+        ttk.Separator(main_frame, orient='horizontal').grid(
+            row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=15
+        )
+        row += 1
+
+        # Startup settings header
+        ttk.Label(
+            main_frame,
+            text="Startup",
+            font=('Arial', 10, 'bold')
+        ).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+        row += 1
+
+        # Auto-connect checkbox
+        self.autostart_var = tk.BooleanVar(
+            value=self.config.get('autostart', False)
+        )
+        ttk.Checkbutton(
+            main_frame,
+            text="Auto-connect on application start",
+            variable=self.autostart_var
+        ).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=5)
+        row += 1
+
+        # Spacer
+        ttk.Frame(main_frame, height=20).grid(row=row, column=0)
+        row += 1
+
+        # Buttons
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=row, column=0, columnspan=2, pady=(10, 0))
+
+        ttk.Button(
+            button_frame,
+            text="Save",
+            command=self._on_save,
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Cancel",
+            command=self._on_cancel,
+            width=12
+        ).pack(side=tk.LEFT, padx=5)
+
+        # Update cache controls state
+        self._on_cache_toggle()
+
+        # Configure grid weights
+        main_frame.columnconfigure(1, weight=1)
+
+    def _on_cache_toggle(self):
+        """Handle cache enable/disable toggle"""
+        enabled = self.cache_enabled_var.get()
+        state = 'normal' if enabled else 'disabled'
+
+        self.max_nodes_label.config(state=state)
+        self.max_nodes_entry.config(state=state)
+
+        if enabled:
+            self.cache_warning.grid()
+        else:
+            self.cache_warning.grid_remove()
+
+    def _validate(self):
+        """Validate settings"""
+        ble_address = self.ble_address_var.get().strip()
+
+        # Validate BLE address
+        if not ble_address:
+            messagebox.showerror(
+                "Validation Error",
+                "BLE MAC address is required"
+            )
+            return False
+
+        # Validate MAC address format
+        mac_pattern = r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
+        if not re.match(mac_pattern, ble_address):
+            messagebox.showerror(
+                "Validation Error",
+                "Invalid MAC address format.\n\n"
+                "Expected format: AA:BB:CC:DD:EE:FF\n"
+                "Example: 48:CA:43:59:4C:71"
+            )
+            return False
+
+        # Validate TCP port
+        tcp_port = self.tcp_port_var.get()
+        if tcp_port < 1 or tcp_port > 65535:
+            messagebox.showerror(
+                "Validation Error",
+                "TCP port must be between 1 and 65535"
+            )
+            return False
+
+        # Validate max cache nodes
+        if self.cache_enabled_var.get():
+            max_nodes = self.max_cache_nodes_var.get()
+            if max_nodes < 1:
+                messagebox.showerror(
+                    "Validation Error",
+                    "Max cache nodes must be at least 1"
+                )
+                return False
+
+        return True
+
+    def _on_save(self):
+        """Handle save button"""
+        if not self._validate():
+            return
+
+        # Update config
+        self.config['ble_address'] = self.ble_address_var.get().strip().upper()
+        self.config['tcp_port'] = self.tcp_port_var.get()
+        self.config['cache_enabled'] = self.cache_enabled_var.get()
+        self.config['max_cache_nodes'] = self.max_cache_nodes_var.get()
+        self.config['autostart'] = self.autostart_var.get()
+
+        # Call callback
+        self.on_save(self.config)
+
+        # Close dialog
+        self.root.destroy()
+
+    def _on_cancel(self):
+        """Handle cancel button"""
+        self.root.destroy()
+
+    def show(self):
+        """Show dialog (blocks until closed)"""
+        self.root.mainloop()
+
+    def focus(self):
+        """Bring window to front"""
+        self.root.lift()
+        self.root.focus_force()
