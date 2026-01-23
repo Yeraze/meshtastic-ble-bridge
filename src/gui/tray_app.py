@@ -203,7 +203,6 @@ class TrayApplication:
                 self._toggle_connection
             ),
             pystray.Menu.SEPARATOR,
-            item('Scan for Devices', self._scan_devices),
             item('View Logs', self._view_logs),
             pystray.Menu.SEPARATOR,
             item('Exit', self._quit_app)
@@ -358,36 +357,6 @@ Cache Hits: {stats.cache_hits}"""
     def _on_stats_update(self, stats: BridgeStatistics):
         """Handle statistics update from bridge"""
         self.last_stats = stats
-
-    def _scan_devices(self, icon=None, item=None):
-        """Scan for BLE devices"""
-        asyncio.run_coroutine_threadsafe(self._scan_devices_async(), self.loop)
-
-    async def _scan_devices_async(self):
-        """Async device scanning"""
-        from core.ble_handler import BLEHandler
-        from core.stats import StatsCollector
-
-        self._show_notification("Scanning", "Scanning for Meshtastic devices...")
-
-        try:
-            stats = StatsCollector()
-            ble = BLEHandler("", stats)
-            devices = await ble.scan_devices()
-
-            if devices:
-                device_list = "\n".join([
-                    f"{d.name or 'Unknown'}: {d.address}" for d in devices
-                ])
-                message = f"Found {len(devices)} device(s):\n\n{device_list}"
-            else:
-                message = "No Meshtastic devices found"
-
-            _show_messagebox_safe("Scan Results", message)
-
-        except Exception as e:
-            logger.error(f"Scan failed: {e}", exc_info=True)
-            _show_messagebox_safe("Scan Failed", f"Failed to scan:\n\n{str(e)}", msg_type='error')
 
     def _view_logs(self, icon=None, item=None):
         """Open log file"""

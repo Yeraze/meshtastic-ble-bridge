@@ -1,8 +1,10 @@
 """Settings dialog for Windows GUI"""
 import tkinter as tk
 from tkinter import ttk, messagebox
-from typing import Callable, Dict
+from typing import Callable, Dict, List
 import re
+import asyncio
+import threading
 
 
 def _show_error(title: str, message: str):
@@ -30,10 +32,12 @@ class SettingsDialog:
         """
         self.config = config.copy()
         self.on_save = on_save
+        self.scan_results: List = []  # List of (name, address) tuples
+        self.scanning = False
 
         self.root = tk.Tk()
         self.root.title("Meshtastic Bridge Settings")
-        self.root.geometry("500x450")
+        self.root.geometry("600x650")
         self.root.resizable(False, False)
 
         # Bring to front
@@ -69,14 +73,27 @@ class SettingsDialog:
         ttk.Label(main_frame, text="BLE MAC Address:").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
+
+        # BLE entry and scan button frame
+        ble_frame = ttk.Frame(main_frame)
+        ble_frame.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
+
         self.ble_address_var = tk.StringVar(value=self.config.get('ble_address', ''))
         ble_entry = ttk.Entry(
-            main_frame,
+            ble_frame,
             textvariable=self.ble_address_var,
-            width=30,
+            width=25,
             font=('Courier', 10)
         )
-        ble_entry.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
+        ble_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.scan_button = ttk.Button(
+            ble_frame,
+            text="Scan",
+            command=self._on_scan_devices,
+            width=8
+        )
+        self.scan_button.pack(side=tk.LEFT, padx=(5, 0))
         row += 1
 
         # Format hint
@@ -86,6 +103,41 @@ class SettingsDialog:
             font=('Arial', 8),
             foreground='gray'
         ).grid(row=row, column=1, sticky=tk.W)
+        row += 1
+
+        # Device scan results frame
+        scan_frame = ttk.LabelFrame(main_frame, text="Available Devices", padding="5")
+        scan_frame.grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(5, 10))
+
+        # Listbox with scrollbar
+        list_frame = ttk.Frame(scan_frame)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.device_listbox = tk.Listbox(
+            list_frame,
+            height=6,
+            yscrollcommand=scrollbar.set,
+            font=('Courier', 9)
+        )
+        self.device_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.device_listbox.yview)
+
+        # Bind double-click to select device
+        self.device_listbox.bind('<Double-Button-1>', self._on_device_select)
+
+        # Status label for scan feedback
+        self.scan_status_var = tk.StringVar(value="Click 'Scan' to find devices")
+        self.scan_status_label = ttk.Label(
+            scan_frame,
+            textvariable=self.scan_status_var,
+            font=('Arial', 8),
+            foreground='gray'
+        )
+        self.scan_status_label.pack(pady=(5, 0))
+
         row += 1
 
         # Separator
@@ -272,6 +324,81 @@ class SettingsDialog:
                 return False
 
         return True
+
+    def _on_scan_devices(self):
+        """Handle scan button click"""
+        if self.scanning:
+            return  # Already scanning
+
+        self.scanning = True
+        self.scan_button.config(state='disabled', text='Scanning...')
+        self.scan_status_var.set('Scanning for devices...')
+        self.device_listbox.delete(0, tk.END)
+        self.scan_results.clear()
+
+        # Run scan in background thread
+        scan_thread = threading.Thread(target=self._scan_devices_thread, daemon=True)
+        scan_thread.start()
+
+    def _scan_devices_thread(self):
+        """Background thread for device scanning"""
+        try:
+            # Import here to avoid circular imports
+            from core.ble_handler import BLEHandler
+            from core.stats import StatsCollector
+
+            # Create event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                stats = StatsCollector()
+                ble = BLEHandler("", stats)
+                devices = loop.run_until_complete(ble.scan_devices())
+
+                # Update UI from main thread
+                self.root.after(0, self._on_scan_complete, devices, None)
+            finally:
+                loop.close()
+
+        except Exception as e:
+            # Update UI from main thread
+            self.root.after(0, self._on_scan_complete, None, str(e))
+
+    def _on_scan_complete(self, devices, error):
+        """Handle scan completion (runs in main thread)"""
+        self.scanning = False
+        self.scan_button.config(state='normal', text='Scan')
+
+        if error:
+            self.scan_status_var.set(f'Scan failed: {error}')
+            _show_error("Scan Failed", f"Failed to scan for devices:\n\n{error}")
+            return
+
+        if not devices:
+            self.scan_status_var.set('No Meshtastic devices found')
+            return
+
+        # Populate listbox
+        for device in devices:
+            name = device.name or 'Unknown'
+            address = device.address
+            self.scan_results.append((name, address))
+            self.device_listbox.insert(tk.END, f"{name:30s} {address}")
+
+        self.scan_status_var.set(f'Found {len(devices)} device(s) - Double-click to select')
+
+    def _on_device_select(self, event=None):
+        """Handle device selection from list"""
+        selection = self.device_listbox.curselection()
+        if not selection:
+            return
+
+        index = selection[0]
+        if index < len(self.scan_results):
+            name, address = self.scan_results[index]
+            self.ble_address_var.set(address)
+            self.scan_status_var.set(f'Selected: {name}')
 
     def _on_save(self):
         """Handle save button"""
