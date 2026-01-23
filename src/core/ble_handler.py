@@ -54,20 +54,30 @@ class BLEHandler:
 
         try:
             # Check if device is discoverable
+            # During reconnection, scan to refresh Windows BLE cache
+            scan_timeout = 2.0 if self._initial_connect else 5.0
             try:
-                logger.debug("Checking for device availability...")
-                devices = await BleakScanner.discover(timeout=2.0, return_adv=True)
+                logger.debug(f"Scanning for device (timeout: {scan_timeout}s)...")
+                devices = await BleakScanner.discover(timeout=scan_timeout, return_adv=True)
                 device_found = False
 
                 for device_addr, (device, adv_data) in devices.items():
                     if device.address.upper() == self.ble_address.upper():
                         device_found = True
-                        logger.debug(f"Device found during scan: {device.name}")
+                        logger.info(f"✅ Device found in scan: {device.name}")
                         break
 
                 if not device_found:
-                    logger.debug("Device not found in scan, attempting direct connection...")
+                    if self._initial_connect:
+                        logger.debug("Device not found in scan, attempting direct connection...")
+                    else:
+                        # During reconnection, if device not found in scan, fail fast
+                        logger.warning("⚠️  Device not found in scan during reconnection")
+                        raise RuntimeError("Device not discoverable - may still be rebooting")
 
+            except RuntimeError:
+                # Re-raise our "not found" error
+                raise
             except Exception as scan_err:
                 logger.debug(f"Scan check failed (this is OK): {scan_err}")
 
