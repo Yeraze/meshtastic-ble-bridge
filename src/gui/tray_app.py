@@ -104,8 +104,8 @@ class TrayApplication:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "bridge.log"
 
-        # File handler
-        file_handler = logging.FileHandler(log_file)
+        # File handler with UTF-8 encoding to support emoji device names
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(
             logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

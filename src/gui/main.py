@@ -10,13 +10,27 @@ def setup_logging():
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "bridge.log"
 
+    # Configure handlers with UTF-8 encoding to support emoji device names
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    )
+
+    # Console handler with UTF-8 and fallback for unsupported characters
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    )
+    # Force UTF-8 encoding on console, replace unsupported chars
+    if hasattr(stream_handler.stream, 'reconfigure'):
+        try:
+            stream_handler.stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass  # Fallback: keep default encoding
+
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler()  # Also log to console
-        ]
+        handlers=[file_handler, stream_handler]
     )
 
 
