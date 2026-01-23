@@ -30,34 +30,51 @@ logger = logging.getLogger(__name__)
 def _show_messagebox_safe(title: str, message: str, msg_type: str = 'info', yes_no: bool = False):
     """
     Thread-safe messagebox display.
-    Must be called from the main thread or pystray menu callbacks.
+    Can be called from any thread - will run in a separate thread if needed.
     """
     import tkinter as tk
     from tkinter import messagebox
 
-    # Create a temporary root window
-    root = tk.Tk()
-    root.withdraw()  # Hide the root window
-    root.attributes('-topmost', True)  # Bring to front
+    def _show():
+        # Create a temporary root window
+        root = tk.Tk()
+        root.withdraw()  # Hide the root window
+        root.attributes('-topmost', True)  # Bring to front
 
-    try:
-        if yes_no:
-            result = messagebox.askyesno(title, message, parent=root)
-        elif msg_type == 'warning':
-            messagebox.showwarning(title, message, parent=root)
-            result = None
-        elif msg_type == 'error':
-            messagebox.showerror(title, message, parent=root)
-            result = None
-        else:  # info
-            messagebox.showinfo(title, message, parent=root)
-            result = None
-    finally:
-        # Properly destroy the root
-        root.quit()
-        root.destroy()
+        try:
+            if yes_no:
+                result = messagebox.askyesno(title, message, parent=root)
+            elif msg_type == 'warning':
+                messagebox.showwarning(title, message, parent=root)
+                result = None
+            elif msg_type == 'error':
+                messagebox.showerror(title, message, parent=root)
+                result = None
+            else:  # info
+                messagebox.showinfo(title, message, parent=root)
+                result = None
+        finally:
+            # Properly destroy the root
+            root.quit()
+            root.destroy()
 
-    return result
+        return result
+
+    # Check if we're in the main thread
+    import threading
+    if threading.current_thread() == threading.main_thread():
+        # Safe to call directly from main thread
+        return _show()
+    else:
+        # Run in a separate thread and wait for it
+        result = [None]
+        def _thread_wrapper():
+            result[0] = _show()
+
+        t = threading.Thread(target=_thread_wrapper, daemon=False)
+        t.start()
+        t.join()  # Wait for dialog to close
+        return result[0]
 
 
 class TrayApplication:

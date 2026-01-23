@@ -5,6 +5,18 @@ from typing import Callable, Dict
 import re
 
 
+def _show_error(title: str, message: str):
+    """Thread-safe error messagebox"""
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes('-topmost', True)
+    try:
+        messagebox.showerror(title, message, parent=root)
+    finally:
+        root.quit()
+        root.destroy()
+
+
 class SettingsDialog:
     """Configuration dialog for bridge settings"""
 
@@ -24,9 +36,9 @@ class SettingsDialog:
         self.root.geometry("500x450")
         self.root.resizable(False, False)
 
-        # Make dialog modal-like
-        self.root.transient()
-        self.root.grab_set()
+        # Bring to front
+        self.root.attributes('-topmost', True)
+        self.root.after(100, lambda: self.root.attributes('-topmost', False))
 
         self._create_widgets()
 
@@ -223,7 +235,7 @@ class SettingsDialog:
 
         # Validate BLE address
         if not ble_address:
-            messagebox.showerror(
+            _show_error(
                 "Validation Error",
                 "BLE MAC address is required"
             )
@@ -232,7 +244,7 @@ class SettingsDialog:
         # Validate MAC address format
         mac_pattern = r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$'
         if not re.match(mac_pattern, ble_address):
-            messagebox.showerror(
+            _show_error(
                 "Validation Error",
                 "Invalid MAC address format.\n\n"
                 "Expected format: AA:BB:CC:DD:EE:FF\n"
@@ -243,7 +255,7 @@ class SettingsDialog:
         # Validate TCP port
         tcp_port = self.tcp_port_var.get()
         if tcp_port < 1 or tcp_port > 65535:
-            messagebox.showerror(
+            _show_error(
                 "Validation Error",
                 "TCP port must be between 1 and 65535"
             )
@@ -253,7 +265,7 @@ class SettingsDialog:
         if self.cache_enabled_var.get():
             max_nodes = self.max_cache_nodes_var.get()
             if max_nodes < 1:
-                messagebox.showerror(
+                _show_error(
                     "Validation Error",
                     "Max cache nodes must be at least 1"
                 )
