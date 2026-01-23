@@ -1,0 +1,107 @@
+name: Build Windows Executable
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write  # Needed to upload release assets
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r src/requirements-gui.txt
+          pip install pyinstaller
+
+      - name: Build executable with PyInstaller
+        run: |
+          cd build/windows
+          pyinstaller build.spec --clean --noconfirm
+
+      - name: Verify build
+        id: verify
+        run: |
+          if (Test-Path "build/windows/dist/MeshtasticBLEBridge.exe") {
+            $size = (Get-Item "build/windows/dist/MeshtasticBLEBridge.exe").Length / 1MB
+            Write-Host "✅ Build successful"
+            Write-Host "Size: $([math]::Round($size, 2)) MB"
+            echo "size=$([math]::Round($size, 2))" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "❌ Build failed - executable not found"
+            exit 1
+          }
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create ZIP archive
+        run: |
+          Compress-Archive -Path build/windows/dist/MeshtasticBLEBridge.exe `
+                          -DestinationPath MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-executable
+          path: MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.zip
+          retention-days: 30
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.zip
+          asset_name: MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.zip
+          asset_content_type: application/zip
+
+      - name: Create checksum
+        if: github.event_name == 'release'
+        run: |
+          $hash = Get-FileHash -Algorithm SHA256 MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.zip
+          "$($hash.Hash)  MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.zip" | Out-File -FilePath checksums.txt
+
+      - name: Upload checksums
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./checksums.txt
+          asset_name: MeshtasticBLEBridge-Windows-${{ steps.version.outputs.version }}.sha256
+          asset_content_type: text/plain
+
+      - name: Summary
+        run: |
+          echo "## Build Summary" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "- **Size:** ${{ steps.verify.outputs.size }} MB" >> $env:GITHUB_STEP_SUMMARY
+          echo "- **Platform:** Windows x64" >> $env:GITHUB_STEP_SUMMARY
+          echo "- **Python:** 3.11" >> $env:GITHUB_STEP_SUMMARY
+          echo "" >> $env:GITHUB_STEP_SUMMARY
+          echo "✅ Build completed successfully" >> $env:GITHUB_STEP_SUMMARY
