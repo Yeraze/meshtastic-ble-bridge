@@ -13,17 +13,17 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies
-RUN pip install --no-cache-dir \
-    meshtastic==2.3.12 \
-    bleak==0.21.1
+# Copy requirements and install dependencies
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bridge script
-COPY ble_tcp_bridge.py /app/
+# Copy bridge source code
+COPY core/ /app/core/
+COPY cli/ /app/cli/
 
 # Expose TCP port
 EXPOSE 4403
 
 # Default command (can be overridden with BLE_ADDRESS env var)
-ENTRYPOINT ["python", "ble_tcp_bridge.py"]
+ENTRYPOINT ["python", "-m", "cli.main"]
 CMD ["--help"]
