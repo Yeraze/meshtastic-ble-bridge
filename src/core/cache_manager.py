@@ -83,9 +83,9 @@ class CacheManager:
             error_msg = str(e)
             if "Authentication" in error_msg or "Protocol Error 0x05" in error_msg:
                 logger.warning(
-                    f"⚠️  Cache pre-warming failed: Authentication required\n"
-                    f"   💡 Pair device in Windows Settings → Bluetooth & devices\n"
-                    f"   Bridge will continue without cache (slower reconnections)"
+                    f"⚠️  Cache pre-warming failed: Device not paired\n"
+                    f"   💡 REQUIRED: Pair device in Windows Settings → Bluetooth & devices\n"
+                    f"   Cache disabled until device is paired"
                 )
             else:
                 logger.warning(f"⚠️  Cache pre-warming failed: {e}")

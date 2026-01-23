@@ -105,7 +105,9 @@ The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records conta
 1. Download `MeshtasticBLEBridge-Windows-vX.X.X.zip` from [Releases](https://github.com/Yeraze/meshtastic-ble-bridge/releases)
 2. Extract `MeshtasticBLEBridge.exe`
 
-### Pair Device
+### Pair Device (REQUIRED)
+**⚠️ Device must be paired in Windows Settings first**
+
 1. Open **Settings** → **Bluetooth & devices** → **Add device**
 2. Select your Meshtastic device and pair
 3. Note the MAC address (e.g., `48:CA:43:59:4C:71`)

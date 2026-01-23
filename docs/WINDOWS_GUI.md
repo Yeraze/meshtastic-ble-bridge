@@ -20,9 +20,9 @@ The Meshtastic BLE Bridge is now available as a native Windows application with 
 2. Download `MeshtasticBLEBridge-Windows-vX.X.X.zip`
 3. Extract `MeshtasticBLEBridge.exe` to a folder of your choice
 
-### Pair Your Device
+### Pair Your Device (REQUIRED)
 
-**Before running the bridge, pair your Meshtastic device:**
+**⚠️ IMPORTANT: You MUST pair your device in Windows first. The bridge will not work without pairing.**
 
 1. Open **Settings** → **Bluetooth & devices**
 2. Click **Add device** → **Bluetooth**
@@ -30,6 +30,8 @@ The Meshtastic BLE Bridge is now available as a native Windows application with 
 4. Click to pair
    - PIN: Usually `123456` or no PIN required
 5. Note the MAC address (e.g., `48:CA:43:59:4C:71`)
+
+**Why pairing is required:** Windows BLE requires OS-level pairing for authenticated characteristic access. Without pairing, the bridge cannot read or write to the device.
 
 ### First Run
 

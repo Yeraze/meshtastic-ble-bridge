@@ -68,7 +68,27 @@ class SettingsDialog:
             text="Bridge Configuration",
             font=('Arial', 12, 'bold')
         )
-        title_label.grid(row=row, column=0, columnspan=2, pady=(0, 15), sticky=tk.W)
+        title_label.grid(row=row, column=0, columnspan=2, pady=(0, 5), sticky=tk.W)
+        row += 1
+
+        # Pairing reminder frame
+        pairing_frame = ttk.Frame(main_frame, relief='solid', borderwidth=1, padding="8")
+        pairing_frame.grid(row=row, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 15))
+
+        ttk.Label(
+            pairing_frame,
+            text="IMPORTANT: Device must be paired in Windows first!",
+            font=('Arial', 9, 'bold'),
+            foreground='#d97706'
+        ).pack(anchor=tk.W)
+
+        ttk.Label(
+            pairing_frame,
+            text="Settings \u2192 Bluetooth & devices \u2192 Add device \u2192 Select your Meshtastic device",
+            font=('Arial', 8),
+            foreground='#666'
+        ).pack(anchor=tk.W, pady=(2, 0))
+
         row += 1
 
         # BLE Address
