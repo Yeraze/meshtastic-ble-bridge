@@ -106,8 +106,8 @@ jobs:
       - name: Test GUI imports
         run: |
           cd src
-          python -c "from gui.settings_dialog import SettingsDialog; print('✅ Settings dialog imports OK')"
-          python -c "import sys; sys.path.insert(0, '.'); from gui import main; print('✅ GUI main imports OK')"
+          python -c "from gui.settings_dialog import SettingsDialog; print('Settings dialog imports OK')"
+          python -c "import sys; sys.path.insert(0, '.'); from gui import main; print('GUI main imports OK')"
 
   docker-build-test:
     name: Test Docker Build
@@ -124,7 +124,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./src
-          push: false
+          load: true
           tags: meshtastic-ble-bridge:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
