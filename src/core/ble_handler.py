@@ -33,6 +33,7 @@ class BLEHandler:
         # Reconnection state
         self.reconnect_attempts = 0
         self.is_reconnecting = False
+        self.services_ready = False  # True only after service discovery completes
         self.disconnection_event = asyncio.Event()
         self.reconnect_lock = asyncio.Lock()  # Prevent concurrent reconnection
 
@@ -108,6 +109,7 @@ class BLEHandler:
                         for s in services
                     ):
                         logger.debug(f"Service discovery complete ({waited:.1f}s)")
+                        self.services_ready = True
                         break
                 except Exception:
                     pass
@@ -116,6 +118,7 @@ class BLEHandler:
                 waited += wait_interval
             else:
                 logger.warning(f"Service discovery may be incomplete after {max_wait}s")
+                self.services_ready = False  # Not ready if timed out
 
             # Register disconnect callback
             self.client.set_disconnected_callback(self._on_ble_disconnect)
@@ -142,6 +145,7 @@ class BLEHandler:
     def _on_ble_disconnect(self, client: BleakClient):
         """Callback when BLE device disconnects"""
         logger.warning(f"⚠️  BLE device disconnected: {self.ble_address}")
+        self.services_ready = False  # Services no longer available
         self.disconnection_event.set()
 
         # Notify bridge
@@ -274,11 +278,21 @@ class BLEHandler:
             packet_bytes: Raw protobuf bytes to send
 
         Raises:
-            RuntimeError: If not connected
+            RuntimeError: If not connected or reconnecting
         """
         if not self.client or not self.client.is_connected:
             logger.warning("⚠️  Cannot send to BLE - not connected")
             raise RuntimeError("BLE client not connected")
+
+        # Don't send during reconnection - characteristics may not be ready
+        if self.is_reconnecting:
+            logger.debug("⏸️  Skipping send during reconnection")
+            raise RuntimeError("BLE client reconnecting, please retry")
+
+        # Don't send if services aren't ready (after connect but before service discovery)
+        if not self.services_ready:
+            logger.debug("⏸️  Skipping send - BLE services not ready")
+            raise RuntimeError("BLE services not ready, please retry")
 
         try:
             logger.debug(f"📤 Sending packet to BLE ({len(packet_bytes)} bytes)")
@@ -289,10 +303,18 @@ class BLEHandler:
             logger.debug(f"✅ Sent {len(packet_bytes)} bytes to BLE")
 
         except Exception as e:
+            error_msg = str(e)
+
+            # Handle characteristic not found (services not ready yet)
+            if "characteristic" in error_msg.lower() and "not found" in error_msg.lower():
+                logger.warning("⚠️  BLE characteristics not ready, triggering reconnection")
+                self.disconnection_event.set()
+                raise RuntimeError("BLE services not ready, reconnecting")
+
             logger.error(f"Failed to send to BLE: {e}")
 
             # Check if error indicates disconnection
-            if "not connected" in str(e).lower() or "disconnected" in str(e).lower():
+            if "not connected" in error_msg.lower() or "disconnected" in error_msg.lower():
                 logger.warning("⚠️  Detected disconnection during send")
                 self.disconnection_event.set()
 

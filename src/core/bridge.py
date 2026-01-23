@@ -117,6 +117,13 @@ class MeshtasticBridge:
             # Forward to BLE device
             await self._send_to_ble_raw(protobuf_bytes)
 
+        except RuntimeError as e:
+            error_msg = str(e)
+            # Don't spam errors for expected reconnection states
+            if "reconnecting" in error_msg.lower() or "not connected" in error_msg.lower():
+                logger.debug(f"Dropping TCP packet during reconnection: {e}")
+            else:
+                logger.error(f"Error handling TCP packet: {e}")
         except Exception as e:
             logger.error(f"Error handling TCP packet: {e}")
 
