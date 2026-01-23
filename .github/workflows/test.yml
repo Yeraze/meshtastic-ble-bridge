@@ -106,7 +106,8 @@ jobs:
       - name: Test GUI imports
         run: |
           cd src
-          python -c "from gui.tray_app import TrayApplication; print('✅ GUI imports OK')"
+          python -c "from gui.settings_dialog import SettingsDialog; print('✅ Settings dialog imports OK')"
+          python -c "import sys; sys.path.insert(0, '.'); from gui import main; print('✅ GUI main imports OK')"
 
   docker-build-test:
     name: Test Docker Build
