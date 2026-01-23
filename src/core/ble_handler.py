@@ -74,33 +74,43 @@ class BLEHandler:
             # Create BleakClient
             self.client = BleakClient(self.ble_address, timeout=20.0)
 
-            # Connect
+            # Connect (with timeout to fail fast during device reboot)
             try:
-                await self.client.connect()
-            except Exception as conn_err:
-                # Try disconnect-reconnect if initial connection fails
-                logger.warning(f"Initial connection failed: {conn_err}")
-                logger.info("Attempting to disconnect any existing connection...")
+                # Only use disconnect-retry logic on initial connection
+                # During reconnection, fail fast and let exponential backoff handle it
+                if self._initial_connect:
+                    # Initial connection - try disconnect-retry if needed
+                    try:
+                        await self.client.connect()
+                    except Exception as conn_err:
+                        logger.warning(f"Initial connection failed: {conn_err}")
+                        logger.info("Attempting to disconnect any existing connection...")
 
-                try:
-                    disconnect_client = BleakClient(self.ble_address, timeout=5.0)
-                    if await disconnect_client.connect():
-                        await disconnect_client.disconnect()
-                        logger.info("Disconnected existing connection")
-                        await asyncio.sleep(2)
-                except Exception as disc_err:
-                    logger.debug(f"Disconnect attempt result: {disc_err}")
+                        try:
+                            disconnect_client = BleakClient(self.ble_address, timeout=5.0)
+                            if await disconnect_client.connect():
+                                await disconnect_client.disconnect()
+                                logger.info("Disconnected existing connection")
+                                await asyncio.sleep(2)
+                        except Exception as disc_err:
+                            logger.debug(f"Disconnect attempt result: {disc_err}")
 
-                # Retry connection
-                logger.info("Retrying connection...")
-                await self.client.connect()
+                        # Retry connection
+                        logger.info("Retrying connection...")
+                        await self.client.connect()
+                else:
+                    # Reconnection - fail fast with shorter timeout
+                    await asyncio.wait_for(self.client.connect(), timeout=15.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"Connection timeout - device may still be rebooting")
 
             if not self.client.is_connected:
                 raise RuntimeError("Failed to establish BLE connection")
 
-            # Wait for service discovery (longer timeout for Windows after device reboot)
+            # Wait for service discovery
             logger.debug("Waiting for service discovery...")
-            max_wait = 20  # Increased from 10s to 20s for Windows
+            # Use shorter timeout during reconnection to fail fast
+            max_wait = 10 if not self._initial_connect else 20
             wait_interval = 0.5
             waited = 0
 
@@ -120,8 +130,12 @@ class BLEHandler:
                 await asyncio.sleep(wait_interval)
                 waited += wait_interval
             else:
-                logger.warning(f"Service discovery may be incomplete after {max_wait}s")
-                self.services_ready = False  # Not ready if timed out
+                error_msg = f"Service discovery timed out after {max_wait}s"
+                logger.warning(f"⚠️  {error_msg}")
+                self.services_ready = False
+                # During reconnection, fail fast so next attempt can try
+                if not self._initial_connect:
+                    raise RuntimeError(error_msg)
 
             # Register disconnect callback
             self.client.set_disconnected_callback(self._on_ble_disconnect)
@@ -232,8 +246,9 @@ class BLEHandler:
         # Quick check before acquiring lock to prevent redundant attempts
         if self.is_reconnecting:
             logger.debug("⏸️  Reconnection already in progress, waiting for it to complete...")
-            # Wait for the other reconnection to finish (max 60s)
-            max_wait = 60
+            # Wait for the other reconnection to finish
+            # Max 200s to allow for all 5 reconnection attempts with exponential backoff
+            max_wait = 200
             waited = 0
             while self.is_reconnecting and waited < max_wait:
                 await asyncio.sleep(0.5)
