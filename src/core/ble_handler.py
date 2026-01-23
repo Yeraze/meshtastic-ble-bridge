@@ -231,10 +231,22 @@ class BLEHandler:
         """
         # Quick check before acquiring lock to prevent redundant attempts
         if self.is_reconnecting:
-            logger.debug("⏸️  Reconnection already in progress, skipping duplicate attempt")
-            # Wait for the other reconnection to finish
-            await asyncio.sleep(1)
-            return self.client and self.client.is_connected
+            logger.debug("⏸️  Reconnection already in progress, waiting for it to complete...")
+            # Wait for the other reconnection to finish (max 60s)
+            max_wait = 60
+            waited = 0
+            while self.is_reconnecting and waited < max_wait:
+                await asyncio.sleep(0.5)
+                waited += 0.5
+
+            if self.is_reconnecting:
+                logger.warning(f"⚠️  Reconnection still in progress after {max_wait}s")
+                return False
+
+            # Reconnection finished, check result
+            result = self.client and self.client.is_connected
+            logger.debug(f"✅ Waited for reconnection to complete: {'success' if result else 'failed'}")
+            return result
 
         async with self.reconnect_lock:
             # Check again after acquiring lock
