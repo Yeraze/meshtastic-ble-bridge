@@ -17,7 +17,7 @@ class BLEHandler:
     """Handles BLE connectivity and communication with Meshtastic device"""
 
     # Reconnection constants
-    MAX_RECONNECT_ATTEMPTS = 5
+    MAX_RECONNECT_ATTEMPTS = 10  # Increased from 5 - Meshtastic devices can take 2+ minutes to reboot
     INITIAL_RECONNECT_DELAY = 2.0  # seconds
     MAX_RECONNECT_DELAY = 60.0  # seconds
     RECONNECT_BACKOFF_FACTOR = 2.0
@@ -55,7 +55,8 @@ class BLEHandler:
         try:
             # Check if device is discoverable
             # During reconnection, scan to refresh Windows BLE cache
-            scan_timeout = 2.0 if self._initial_connect else 5.0
+            # Use longer timeout for reconnection - Windows BLE can be slow to rediscover devices
+            scan_timeout = 2.0 if self._initial_connect else 10.0
             try:
                 logger.debug(f"Scanning for device (timeout: {scan_timeout}s)...")
                 devices = await BleakScanner.discover(timeout=scan_timeout, return_adv=True)
@@ -198,7 +199,7 @@ class BLEHandler:
                     # Wait for bridge's disconnect handler to complete reconnection
                     # Don't call attempt_reconnection() ourselves - let the callback handle it
                     logger.debug("⏸️  Waiting for reconnection to complete...")
-                    max_wait = 250  # Allow time for all 5 reconnection attempts
+                    max_wait = 600  # Allow time for all 10 reconnection attempts (up to 10 minutes)
                     waited = 0
 
                     while waited < max_wait and self.running:
@@ -274,8 +275,8 @@ class BLEHandler:
         if self.is_reconnecting:
             logger.debug("⏸️  Reconnection already in progress, waiting for it to complete...")
             # Wait for the other reconnection to finish
-            # Max 200s to allow for all 5 reconnection attempts with exponential backoff
-            max_wait = 200
+            # Max 600s to allow for all 10 reconnection attempts with exponential backoff
+            max_wait = 600
             waited = 0
             while self.is_reconnecting and waited < max_wait:
                 await asyncio.sleep(0.5)
@@ -323,15 +324,24 @@ class BLEHandler:
             await asyncio.sleep(delay)
 
             try:
-                # Disconnect old client if exists
+                # Fully clean up old client before creating new one
                 if self.client:
+                    logger.debug("Cleaning up old BLE client...")
                     try:
                         if self.client.is_connected:
                             await self.client.disconnect()
+                            logger.debug("Disconnected old client")
                     except Exception as e:
                         logger.debug(f"Error disconnecting old client: {e}")
 
-                # Reconnect
+                    # Release the old client object
+                    self.client = None
+
+                    # Give Windows time to release BLE resources
+                    await asyncio.sleep(1.0)
+                    logger.debug("Released old client resources")
+
+                # Reconnect with fresh client
                 await self.connect()
 
                 logger.info("✅ Reconnection successful")
