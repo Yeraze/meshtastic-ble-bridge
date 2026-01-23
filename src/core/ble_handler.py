@@ -45,6 +45,9 @@ class BLEHandler:
         self.last_packet_hash: Optional[int] = None
         self.last_packet_time: float = 0
 
+        # Track initial vs reconnect
+        self._initial_connect = True
+
     async def connect(self):
         """Connect to BLE device"""
         logger.info(f"Connecting to BLE device: {self.ble_address}")
@@ -95,9 +98,9 @@ class BLEHandler:
             if not self.client.is_connected:
                 raise RuntimeError("Failed to establish BLE connection")
 
-            # Wait for service discovery
+            # Wait for service discovery (longer timeout for Windows after device reboot)
             logger.debug("Waiting for service discovery...")
-            max_wait = 10
+            max_wait = 20  # Increased from 10s to 20s for Windows
             wait_interval = 0.5
             waited = 0
 
@@ -133,10 +136,13 @@ class BLEHandler:
 
             logger.info(f"✅ Connected to BLE device: {self.ble_address}")
 
-            # Start polling task
-            self.running = True
-            self.poll_task = asyncio.create_task(self._poll_from_radio())
-            logger.debug(f"✅ Started polling FromRadio characteristic")
+            # Start polling task ONLY on initial connect, not on reconnect
+            # (reconnect happens within the existing polling loop)
+            if self._initial_connect:
+                self.running = True
+                self.poll_task = asyncio.create_task(self._poll_from_radio())
+                logger.debug(f"✅ Started polling FromRadio characteristic")
+                self._initial_connect = False
 
         except Exception as e:
             logger.error(f"❌ Failed to connect to BLE device: {e}")
@@ -167,7 +173,10 @@ class BLEHandler:
                     reconnected = await self.attempt_reconnection()
                     if not reconnected:
                         logger.error("💀 Failed to reconnect, exiting polling loop")
+                        self.running = False  # Mark as not running
                         break
+                    # Reconnection succeeded, continue polling
+                    logger.debug("🔄 Resuming polling after successful reconnection")
                     continue
 
                 # Read from FromRadio characteristic
@@ -220,7 +229,19 @@ class BLEHandler:
         Returns:
             True if reconnected successfully, False if max attempts exceeded
         """
+        # Quick check before acquiring lock to prevent redundant attempts
+        if self.is_reconnecting:
+            logger.debug("⏸️  Reconnection already in progress, skipping duplicate attempt")
+            # Wait for the other reconnection to finish
+            await asyncio.sleep(1)
+            return self.client and self.client.is_connected
+
         async with self.reconnect_lock:
+            # Check again after acquiring lock
+            if self.is_reconnecting:
+                logger.debug("⏸️  Reconnection already in progress (after lock)")
+                return self.client and self.client.is_connected
+
             if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
                 logger.error(
                     f"💀 Maximum reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) "
@@ -341,6 +362,12 @@ class BLEHandler:
                 logger.warning(f"Error during BLE disconnect: {e}")
 
         await self.stats.on_ble_disconnected()
+
+        # Reset state for next connection
+        self._initial_connect = True
+        self.reconnect_attempts = 0
+        self.is_reconnecting = False
+        self.services_ready = False
 
     async def scan_devices(self) -> list:
         """
