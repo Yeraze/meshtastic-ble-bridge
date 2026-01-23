@@ -27,6 +27,39 @@ from gui.settings_dialog import SettingsDialog
 logger = logging.getLogger(__name__)
 
 
+def _show_messagebox_safe(title: str, message: str, msg_type: str = 'info', yes_no: bool = False):
+    """
+    Thread-safe messagebox display.
+    Must be called from the main thread or pystray menu callbacks.
+    """
+    import tkinter as tk
+    from tkinter import messagebox
+
+    # Create a temporary root window
+    root = tk.Tk()
+    root.withdraw()  # Hide the root window
+    root.attributes('-topmost', True)  # Bring to front
+
+    try:
+        if yes_no:
+            result = messagebox.askyesno(title, message, parent=root)
+        elif msg_type == 'warning':
+            messagebox.showwarning(title, message, parent=root)
+            result = None
+        elif msg_type == 'error':
+            messagebox.showerror(title, message, parent=root)
+            result = None
+        else:  # info
+            messagebox.showinfo(title, message, parent=root)
+            result = None
+    finally:
+        # Properly destroy the root
+        root.quit()
+        root.destroy()
+
+    return result
+
+
 class TrayApplication:
     """System tray application for Windows"""
 
@@ -165,9 +198,6 @@ class TrayApplication:
 
     def _show_status(self, icon=None, item=None):
         """Show status message box"""
-        import tkinter as tk
-        from tkinter import messagebox
-
         if not self.last_stats or not self.last_stats.ble_connected:
             message = "Bridge is not running\n\nConnect to a device from the tray menu"
         else:
@@ -188,26 +218,18 @@ Cache: {'Enabled' if stats.cache_enabled else 'Disabled'}
 Cache Size: {stats.cache_size}
 Cache Hits: {stats.cache_hits}"""
 
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showinfo("Bridge Status", message)
-        root.destroy()
+        _show_messagebox_safe("Bridge Status", message)
 
     def _show_settings(self, icon=None, item=None):
         """Show settings dialog"""
         if self._is_connected():
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            result = messagebox.askyesno(
+            result = _show_messagebox_safe(
                 "Bridge Running",
                 "Bridge is currently connected.\n\n"
                 "Settings changes require reconnection.\n"
-                "Continue?"
+                "Continue?",
+                yes_no=True
             )
-            root.destroy()
 
             if not result:
                 return
@@ -225,17 +247,11 @@ Cache Hits: {stats.cache_hits}"""
         logger.info("Settings saved")
 
         if was_connected:
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showinfo(
+            _show_messagebox_safe(
                 "Settings Saved",
                 "Settings saved successfully.\n\n"
                 "Reconnecting to device..."
             )
-            root.destroy()
 
             # Reconnect
             asyncio.run_coroutine_threadsafe(self._restart_bridge(), self.loop)
@@ -246,16 +262,11 @@ Cache Hits: {stats.cache_hits}"""
             asyncio.run_coroutine_threadsafe(self._stop_bridge(), self.loop)
         else:
             if not self.config.get('ble_address'):
-                import tkinter as tk
-                from tkinter import messagebox
-
-                root = tk.Tk()
-                root.withdraw()
-                messagebox.showwarning(
+                _show_messagebox_safe(
                     "Configuration Required",
-                    "Please set BLE MAC address in Settings first"
+                    "Please set BLE MAC address in Settings first",
+                    msg_type='warning'
                 )
-                root.destroy()
                 self._show_settings()
                 return
 
@@ -291,17 +302,12 @@ Cache Hits: {stats.cache_hits}"""
         except Exception as e:
             logger.error(f"Failed to start bridge: {e}", exc_info=True)
 
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror(
+            _show_messagebox_safe(
                 "Connection Failed",
                 f"Failed to start bridge:\n\n{str(e)}\n\n"
-                f"Check that device is paired and in range."
+                f"Check that device is paired and in range.",
+                msg_type='error'
             )
-            root.destroy()
 
     async def _stop_bridge(self):
         """Stop the bridge"""
@@ -352,24 +358,11 @@ Cache Hits: {stats.cache_hits}"""
             else:
                 message = "No Meshtastic devices found"
 
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showinfo("Scan Results", message)
-            root.destroy()
+            _show_messagebox_safe("Scan Results", message)
 
         except Exception as e:
             logger.error(f"Scan failed: {e}", exc_info=True)
-
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showerror("Scan Failed", f"Failed to scan:\n\n{str(e)}")
-            root.destroy()
+            _show_messagebox_safe("Scan Failed", f"Failed to scan:\n\n{str(e)}", msg_type='error')
 
     def _view_logs(self, icon=None, item=None):
         """Open log file"""
@@ -381,13 +374,7 @@ Cache Hits: {stats.cache_hits}"""
             # Windows notepad
             subprocess.run(['notepad.exe', str(log_file)])
         else:
-            import tkinter as tk
-            from tkinter import messagebox
-
-            root = tk.Tk()
-            root.withdraw()
-            messagebox.showinfo("No Logs", "Log file not found")
-            root.destroy()
+            _show_messagebox_safe("No Logs", "Log file not found")
 
     def _show_notification(self, title: str, message: str):
         """Show system tray notification"""
