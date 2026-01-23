@@ -40,6 +40,8 @@ def _show_messagebox_safe(title: str, message: str, msg_type: str = 'info', yes_
         root = tk.Tk()
         root.withdraw()  # Hide the root window
         root.attributes('-topmost', True)  # Bring to front
+        root.lift()
+        root.focus_force()
 
         try:
             if yes_no:
@@ -54,8 +56,7 @@ def _show_messagebox_safe(title: str, message: str, msg_type: str = 'info', yes_
                 messagebox.showinfo(title, message, parent=root)
                 result = None
         finally:
-            # Properly destroy the root
-            root.quit()
+            # Destroy the root (don't call quit() since we're not running mainloop)
             root.destroy()
 
         return result

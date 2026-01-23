@@ -12,10 +12,12 @@ def _show_error(title: str, message: str):
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
+    root.lift()
+    root.focus_force()
     try:
         messagebox.showerror(title, message, parent=root)
     finally:
-        root.quit()
+        # Don't call quit() since we're not running mainloop
         root.destroy()
 
 
