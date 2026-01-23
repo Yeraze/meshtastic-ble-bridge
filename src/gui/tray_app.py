@@ -234,7 +234,15 @@ Cache Hits: {stats.cache_hits}"""
             if not result:
                 return
 
-        # Show settings dialog
+        # Show settings dialog in a separate thread to avoid blocking pystray
+        settings_thread = threading.Thread(
+            target=self._show_settings_threaded,
+            daemon=False
+        )
+        settings_thread.start()
+
+    def _show_settings_threaded(self):
+        """Show settings dialog in separate thread"""
         dialog = SettingsDialog(self.config, self._on_settings_save)
         dialog.show()
 
