@@ -8,14 +8,30 @@ block_cipher = None
 # Analysis - determine what to include
 a = Analysis(
     ['../../src/gui/main.py'],
-    pathex=[],
+    pathex=['../../src'],
     binaries=[],
     datas=[
         ('../../src/gui/resources/*.*', 'gui/resources'),
     ],
     hiddenimports=[
+        # Core modules
+        'core',
+        'core.bridge',
+        'core.stats',
+        'core.ble_handler',
+        'core.tcp_handler',
+        'core.cache_manager',
+        'core.protocol',
+        # GUI modules
+        'gui',
+        'gui.settings_dialog',
+        'gui.tray_app',
+        # Third-party dependencies
         'bleak',
+        'bleak.backends.winrt',
         'meshtastic',
+        'meshtastic.mesh_pb2',
+        'meshtastic.protobuf',
         'pystray',
         'PIL',
         'PIL._tkinter_finder',
@@ -63,7 +79,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # No console window (GUI app)
+    console=True,  # Show console for debugging
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
