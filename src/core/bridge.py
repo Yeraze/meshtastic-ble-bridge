@@ -140,16 +140,24 @@ class MeshtasticBridge:
         """Handle BLE disconnection event"""
         logger.warning("BLE disconnected, attempting reconnection...")
 
-        # Attempt reconnection
-        reconnected = await self.ble.attempt_reconnection()
+        # Attempt reconnection with multiple retries
+        max_attempts = self.ble.MAX_RECONNECT_ATTEMPTS
+        for attempt in range(1, max_attempts + 1):
+            reconnected = await self.ble.attempt_reconnection()
 
-        if reconnected:
-            # Re-warm cache if enabled
-            if self.cache.enabled:
-                await self.cache.prewarm(self._send_to_ble_raw)
-        else:
-            logger.error("💀 Failed to reconnect to BLE device")
-            # Let container orchestration handle restart
+            if reconnected:
+                # Re-warm cache if enabled
+                if self.cache.enabled:
+                    await self.cache.prewarm(self._send_to_ble_raw)
+                return
+
+            # If not the last attempt, continue to next retry
+            if attempt < max_attempts:
+                logger.warning(f"Reconnection attempt {attempt}/{max_attempts} failed, will retry...")
+
+        # All attempts exhausted
+        logger.error("💀 Failed to reconnect to BLE device after all attempts")
+        # Let container orchestration handle restart
 
     def get_statistics(self):
         """Get current bridge statistics"""
