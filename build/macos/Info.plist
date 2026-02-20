@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Application Identity -->
+    <key>CFBundleIdentifier</key>
+    <string>com.meshtastic.ble-bridge</string>
+
+    <key>CFBundleName</key>
+    <string>Meshtastic BLE Bridge</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Meshtastic BLE Bridge</string>
+
+    <key>CFBundleExecutable</key>
+    <string>MeshtasticBLEBridge</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <!-- Version Information -->
+    <key>CFBundleVersion</key>
+    <string>2.0.0</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>2.0.0</string>
+
+    <!-- Menu Bar App (no dock icon) -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Minimum macOS Version -->
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13.0</string>
+
+    <!-- Bluetooth Permission Descriptions -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Meshtastic BLE Bridge requires Bluetooth access to communicate with Meshtastic devices over Bluetooth Low Energy.</string>
+
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>Meshtastic BLE Bridge requires Bluetooth access to communicate with Meshtastic devices over Bluetooth Low Energy.</string>
+
+    <!-- High Resolution Support -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Dark Mode Support -->
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+
+    <!-- Copyright -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright 2024 Meshtastic BLE Bridge. BSD-3-Clause License.</string>
+
+    <!-- App Category -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+</dict>
+</plist>

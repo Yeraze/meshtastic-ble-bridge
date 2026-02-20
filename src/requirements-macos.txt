@@ -1,0 +1,9 @@
+# macOS GUI dependencies for Meshtastic BLE Bridge
+-r requirements.txt
+
+# GUI framework (cross-platform)
+pystray==0.19.5
+Pillow==10.2.0
+
+# macOS native integration for better dialogs and notifications
+pyobjc-framework-Cocoa; platform_system=="Darwin"

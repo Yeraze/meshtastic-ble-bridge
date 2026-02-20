@@ -3,3 +3,4 @@ src/__pycache__/
 *.pyc
 *.pyo
 .serena/
+build/macos/dist/

@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ['3.9', '3.10', '3.11', '3.12']
 
     steps:
@@ -85,7 +85,7 @@ jobs:
           cd src
           python -m cli.main --help
 
-  test-gui-imports:
+  test-gui-imports-windows:
     name: Test GUI Imports (Windows)
     runs-on: windows-latest
 
@@ -108,6 +108,71 @@ jobs:
           cd src
           python -c "from gui.settings_dialog import SettingsDialog; print('Settings dialog imports OK')"
           python -c "import sys; sys.path.insert(0, '.'); from gui import main; print('GUI main imports OK')"
+
+  test-gui-imports-macos:
+    name: Test GUI Imports (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install GUI dependencies
+        run: |
+          pip install -r src/requirements-macos.txt
+
+      - name: Test GUI imports
+        run: |
+          cd src
+          python -c "from gui.macos_settings_dialog import SettingsDialog; print('macOS Settings dialog imports OK')"
+          python -c "import sys; sys.path.insert(0, '.'); from gui import macos_main; print('macOS GUI main imports OK')"
+
+  build-macos-app:
+    name: Build macOS App
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r src/requirements-macos.txt
+          pip install pyinstaller
+
+      - name: Build app bundle
+        run: |
+          cd build/macos
+          pyinstaller build.spec --clean --noconfirm
+
+      - name: Verify build
+        run: |
+          if [ -d "build/macos/dist/MeshtasticBLEBridge.app" ]; then
+            echo "Build successful"
+            du -sh "build/macos/dist/MeshtasticBLEBridge.app"
+          else
+            echo "Build failed - app bundle not found"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-unsigned
+          path: build/macos/dist/MeshtasticBLEBridge.app
+          retention-days: 7
 
   docker-build-test:
     name: Test Docker Build
