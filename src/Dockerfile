@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.15-rc-alpine3.22
 
 LABEL org.opencontainers.image.title="MeshMonitor BLE Bridge"
 LABEL org.opencontainers.image.description="Bluetooth Low Energy to TCP bridge for Meshtastic devices"
