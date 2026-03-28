@@ -283,6 +283,9 @@ Cache Hits: {stats.cache_hits}"""
 
             # Reconnect
             asyncio.run_coroutine_threadsafe(self._restart_bridge(), self.loop)
+        elif self.config.get('ble_address'):
+            # Auto-connect after first-time setup
+            asyncio.run_coroutine_threadsafe(self._start_bridge(), self.loop)
 
     def _toggle_connection(self, icon=None, item=None):
         """Connect or disconnect bridge"""
