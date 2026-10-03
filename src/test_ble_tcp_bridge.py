@@ -356,5 +356,201 @@ class TestErrorScenarios:
             bridge.create_tcp_frame(large_payload)
 
 
+class FakeBLEDevice:
+    """Simulated BLE peripheral shared by all FakeBleakClient instances."""
+
+    def __init__(self):
+        self.available = True
+        self.clients = []
+        self.from_radio = []  # queued FromRadio payloads
+        self.to_radio = []  # payloads written by the bridge
+
+    def drop(self):
+        """Simulate the link going down (device reboot / out of range)."""
+        self.available = False
+        for client in self.clients:
+            client._connected = False
+
+    def make_client(self, *args, **kwargs):
+        client = FakeBleakClient(self)
+        self.clients.append(client)
+        return client
+
+
+class FakeBleakClient:
+    def __init__(self, device):
+        self._device = device
+        self._connected = False
+        self.services = [Mock(uuid="6ba1b218-15a8-461f-9fa8-5dcae273eafd")]
+
+    @property
+    def is_connected(self):
+        return self._connected and self._device.available
+
+    async def connect(self):
+        await asyncio.sleep(0)
+        if not self._device.available:
+            raise RuntimeError("Device not found")
+        self._connected = True
+        return True
+
+    async def disconnect(self):
+        self._connected = False
+
+    def set_disconnected_callback(self, callback):
+        pass
+
+    async def read_gatt_char(self, uuid):
+        await asyncio.sleep(0)
+        if not self.is_connected:
+            raise RuntimeError("Not connected")
+        return self._device.from_radio.pop(0) if self._device.from_radio else b""
+
+    async def write_gatt_char(self, uuid, data):
+        if not self.is_connected:
+            raise RuntimeError("Not connected")
+        self._device.to_radio.append(bytes(data))
+
+
+def live_poll_tasks():
+    return [t for t in asyncio.all_tasks()
+            if not t.done() and t.get_coro().__qualname__ == "MeshtasticBLEBridge.poll_from_radio"]
+
+
+async def wait_until(predicate, timeout=5.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() > deadline:
+            raise AssertionError("condition not met before timeout")
+        await asyncio.sleep(0.01)
+
+
+class TestReconnectLifecycle:
+    """Regression tests for issue #15: duplicated poll loops and reconnect busy-loop"""
+
+    @pytest.fixture
+    def device(self):
+        device = FakeBLEDevice()
+        with patch('ble_tcp_bridge.BleakClient', side_effect=device.make_client), \
+             patch('ble_tcp_bridge.BleakScanner.discover', AsyncMock(return_value={})):
+            yield device
+
+    @pytest.fixture
+    def bridge(self, device):
+        bridge = ble_tcp_bridge.MeshtasticBLEBridge("AA:BB:CC:DD:EE:FF", tcp_port=0)
+        bridge.INITIAL_RECONNECT_DELAY = 0.01
+        bridge.register_mdns_service = AsyncMock()
+        return bridge
+
+    async def _start(self, bridge):
+        task = asyncio.create_task(bridge.start())
+        await wait_until(lambda: bridge.tcp_server is not None and bridge.tcp_server.is_serving())
+        return task
+
+    async def _shutdown(self, bridge, start_task):
+        bridge.request_shutdown()
+        await asyncio.wait_for(start_task, timeout=5)
+        await asyncio.wait_for(bridge.stop(), timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_reconnect_cycles_keep_single_poll_task(self, bridge, device):
+        start_task = await self._start(bridge)
+        original_poll_task = bridge.poll_task
+        assert live_poll_tasks() == [original_poll_task]
+
+        for cycle in range(3):
+            device.drop()
+            await wait_until(lambda: bridge.is_reconnecting)
+            await asyncio.sleep(0.05)
+            device.available = True
+            await wait_until(lambda: not bridge.is_reconnecting and bridge.ble_client.is_connected)
+
+            assert live_poll_tasks() == [original_poll_task], f"cycle {cycle}"
+            assert bridge.poll_task is original_poll_task
+
+        await self._shutdown(bridge, start_task)
+        assert live_poll_tasks() == []
+
+    @pytest.mark.asyncio
+    async def test_concurrent_callers_share_one_reconnect(self, bridge):
+        bridge.running = True
+        bridge.ble_client = None
+        connected_client = Mock(is_connected=True)
+
+        async def slow_connect():
+            await asyncio.sleep(0.1)
+            bridge.ble_client = connected_client
+
+        bridge.connect_ble = AsyncMock(side_effect=slow_connect)
+
+        async def caller():
+            result = await bridge.attempt_reconnection()
+            # Nobody may report success before the link is actually back
+            return result, bridge.ble_client is connected_client
+
+        results = await asyncio.gather(*(caller() for _ in range(5)))
+
+        assert results == [(True, True)] * 5
+        assert bridge.connect_ble.await_count == 1
+        assert bridge.is_reconnecting is False
+
+    @pytest.mark.asyncio
+    async def test_reconnect_failure_shuts_bridge_down(self, bridge, device):
+        bridge.MAX_RECONNECT_ATTEMPTS = 3
+        start_task = await self._start(bridge)
+
+        device.drop()
+
+        with pytest.raises(RuntimeError, match="polling stopped"):
+            await asyncio.wait_for(start_task, timeout=5)
+
+        assert live_poll_tasks() == []
+        assert not bridge.tcp_server.is_serving()
+        assert bridge.reconnect_attempts == 3
+        assert bridge.is_reconnecting is False
+        await asyncio.wait_for(bridge.stop(), timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_during_reconnect_backoff(self, bridge, device):
+        bridge.INITIAL_RECONNECT_DELAY = 30.0
+        start_task = await self._start(bridge)
+
+        device.drop()
+        await wait_until(lambda: bridge.is_reconnecting)
+
+        await self._shutdown(bridge, start_task)
+
+        assert live_poll_tasks() == []
+        assert bridge.poll_task.done()
+        assert bridge._reconnect_task.done()
+        assert bridge.is_reconnecting is False
+
+    @pytest.mark.asyncio
+    async def test_forwarding_and_shutdown_with_connected_tcp_client(self, bridge, device):
+        start_task = await self._start(bridge)
+        port = bridge.tcp_server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection('127.0.0.1', port)
+        await wait_until(lambda: len(bridge.tcp_clients) == 1)
+
+        # TCP -> BLE
+        to_radio = mesh_pb2.ToRadio()
+        to_radio.want_config_id = 1234
+        payload = to_radio.SerializeToString()
+        writer.write(bridge.create_tcp_frame(payload))
+        await writer.drain()
+        await wait_until(lambda: device.to_radio == [payload])
+
+        # BLE -> TCP
+        from_radio = mesh_pb2.FromRadio()
+        from_radio.config_complete_id = 1234
+        device.from_radio.append(from_radio.SerializeToString())
+        frame = await asyncio.wait_for(reader.readexactly(4 + len(from_radio.SerializeToString())), timeout=2)
+        assert frame == bridge.create_tcp_frame(from_radio.SerializeToString())
+
+        # SIGTERM path must not hang on the still-open client connection
+        await self._shutdown(bridge, start_task)
+        writer.close()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
