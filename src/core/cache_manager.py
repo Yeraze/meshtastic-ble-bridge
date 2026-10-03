@@ -292,7 +292,11 @@ class CacheManager:
 
     def can_serve(self, to_radio_bytes: bytes) -> bool:
         """
-        Check if cache can serve a ToRadio request.
+        Check if cache can serve a ToRadio config request.
+
+        Modern Meshtastic clients use want_config_id 69420 and 69421
+        for their two-stage connection handshake. These requests must
+        reach the actual device instead of being replayed from cache.
 
         Args:
             to_radio_bytes: ToRadio protobuf bytes
@@ -306,7 +310,16 @@ class CacheManager:
         try:
             to_radio = mesh_pb2.ToRadio()
             to_radio.ParseFromString(to_radio_bytes)
-            return to_radio.HasField('want_config_id')
+
+            if not to_radio.HasField('want_config_id'):
+                return False
+
+            # Modern two-stage handshake must reach the real device.
+            if to_radio.want_config_id in (69420, 69421):
+                return False
+
+            return True
+
         except Exception:
             return False
 
