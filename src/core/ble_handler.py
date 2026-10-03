@@ -193,12 +193,12 @@ class BLEHandler:
                 # Keep the bridge usable even if notifications fail.
                 logger.warning(f"⚠️ Failed to enable FROMNUM notifications: {e}")
 
-            # Start polling task ONLY on initial connect, not on reconnect
-            # (reconnect happens within the existing polling loop)
+            # Start receive task ONLY on initial connect, not on reconnect.
+            # The same task remains active across BLE reconnections.
             if self._initial_connect:
                 self.running = True
                 self.poll_task = asyncio.create_task(self._poll_from_radio())
-                logger.debug(f"✅ Started polling FromRadio characteristic")
+                logger.debug("✅ Started event-driven FromRadio receive task")
                 self._initial_connect = False
 
         except Exception as e:
