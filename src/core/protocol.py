@@ -41,40 +41,46 @@ class ProtocolHandler:
     @staticmethod
     async def read_tcp_frame(reader) -> bytes:
         """
-        Read TCP frame from asyncio StreamReader.
+        Read one Meshtastic TCP frame from an asyncio StreamReader.
 
-        Args:
-            reader: asyncio.StreamReader instance
-
-        Returns:
-            Raw protobuf bytes (without frame header)
-
-        Raises:
-            asyncio.IncompleteReadError: If connection closes mid-frame
-            ValueError: If frame header is invalid
+        The Meshtastic stream protocol may contain arbitrary bytes before
+        a frame, including the 0xC3 wake/resync preamble sent by official
+        clients. Scan byte-by-byte until the 0x94 0xC3 magic sequence is
+        found instead of assuming the stream starts on a frame boundary.
         """
-        # Read 4-byte header
-        header = await reader.readexactly(4)
 
-        # Validate magic bytes
-        if header[0] != START1 or header[1] != START2:
-            raise ValueError(
-                f"Invalid frame header: got {header[0]:02x} {header[1]:02x}, "
-                f"expected {START1:02x} {START2:02x}"
-            )
+        state = 0
 
-        # Parse length field (big-endian)
-        length = struct.unpack('>H', header[2:4])[0]
+        while True:
+            byte = await reader.readexactly(1)
+            value = byte[0]
 
-        # Validate length
-        if length > MAX_PACKET_SIZE:
-            raise ValueError(
-                f"Frame length too large: {length} > {MAX_PACKET_SIZE}"
-            )
+            if state == 0:
+                # Looking for START1 (0x94)
+                if value == START1:
+                    state = 1
+                continue
 
-        # Read protobuf payload
-        protobuf_bytes = await reader.readexactly(length)
-        return protobuf_bytes
+            # We already saw START1
+            if value == START2:
+                # Valid magic sequence 94 C3 found
+                length_bytes = await reader.readexactly(2)
+                length = struct.unpack('>H', length_bytes)[0]
+
+                if length > MAX_PACKET_SIZE:
+                    logger.warning(
+                        f"Invalid frame length {length}; resynchronizing"
+                    )
+                    state = 0
+                    continue
+
+                return await reader.readexactly(length)
+
+            # Handle 94 94 C3 without losing the second 94
+            if value == START1:
+                state = 1
+            else:
+                state = 0
 
     @staticmethod
     def validate_frame_size(protobuf_bytes: bytes) -> bool:
