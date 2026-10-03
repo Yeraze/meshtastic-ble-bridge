@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 MESHTASTIC_SERVICE_UUID = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
 TORADIO_UUID = "f75c76d2-129e-4dad-a1dd-7866124401e7"  # Write to device
 FROMRADIO_UUID = "2c55e69e-4993-11ed-b878-0242ac120002"  # Read from device
+FROMNUM_UUID = "ed9da18c-a800-4f66-a670-aa7547e34453"    # FromRadio counter
 
 
 class BLEHandler:
@@ -29,6 +30,12 @@ class BLEHandler:
         self.client: Optional[BleakClient] = None
         self.poll_task: Optional[asyncio.Task] = None
         self.running = False
+
+        # Serialize BLE GATT operations. BlueZ does not like overlapping
+        # ReadValue/WriteValue requests on the same connection.
+        self.gatt_lock = asyncio.Lock()
+        self.read_event = asyncio.Event()
+        self.last_from_num = None
 
         # Reconnection state
         self.reconnect_attempts = 0
@@ -170,6 +177,22 @@ class BLEHandler:
 
             logger.info(f"✅ Connected to BLE device: {self.ble_address}")
 
+            # Subscribe to FROMNUM notifications.
+            #
+            # Config transfers are still handled by the existing read-driven
+            # mechanism. FROMNUM gives us the missing wake-up for asynchronous
+            # packets/responses that can arrive after the original ToRadio write.
+            try:
+                async with self.gatt_lock:
+                    await asyncio.wait_for(
+                        self.client.start_notify(FROMNUM_UUID, self._on_from_num),
+                        timeout=10.0
+                )
+                logger.info("✅ FROMNUM notifications enabled")
+            except Exception as e:
+                # Keep the bridge usable even if notifications fail.
+                logger.warning(f"⚠️ Failed to enable FROMNUM notifications: {e}")
+
             # Start polling task ONLY on initial connect, not on reconnect
             # (reconnect happens within the existing polling loop)
             if self._initial_connect:
@@ -182,6 +205,29 @@ class BLEHandler:
             logger.error(f"❌ Failed to connect to BLE device: {e}")
             raise
 
+    def _on_from_num(self, sender, data):
+        """
+        FROMNUM notification callback.
+
+        FROMNUM is only a wake signal.  Do not treat its value as the
+        number of queued messages; wake the normal FromRadio drain instead.
+        """
+        try:
+            raw = bytes(data)
+            value = int.from_bytes(raw[:4], "little") if raw else None
+
+            if value != self.last_from_num:
+                logger.debug(f"FROMNUM notify: {value}")
+                self.last_from_num = value
+
+        except Exception as e:
+            logger.debug(f"Failed to decode FROMNUM notification: {e}")
+
+        # If a FromRadio drain is already running, Event.set() remains set
+        # and causes another drain immediately afterwards.
+        self.read_event.set()
+
+
     def _on_ble_disconnect(self, client: BleakClient):
         """Callback when BLE device disconnects"""
         logger.warning(f"⚠️  BLE device disconnected: {self.ble_address}")
@@ -192,86 +238,86 @@ class BLEHandler:
         if self.on_disconnected:
             asyncio.create_task(self.on_disconnected())
 
+    async def _drain_from_radio(self):
+        """Drain all currently queued FromRadio protobuf messages."""
+        retries = 0
+
+        while self.running and self.client and self.client.is_connected:
+            try:
+                async with self.gatt_lock:
+                    data = await asyncio.wait_for(
+                        self.client.read_gatt_char(FROMRADIO_UUID),
+                        timeout=3.0
+                    )
+
+                if not data:
+                    if retries < 5:
+                        retries += 1
+                        await asyncio.sleep(0.05)
+                        continue
+                    break
+
+                retries = 0
+
+                # Preserve the existing duplicate-packet protection.
+                import time
+                packet_hash = hash(bytes(data))
+                current_time = time.time()
+
+                if (
+                    packet_hash == self.last_packet_hash
+                    and (current_time - self.last_packet_time) < 0.1
+                ):
+                    logger.debug(
+                        f"⏭️  Skipping duplicate packet ({len(data)} bytes)"
+                    )
+                    continue
+
+                self.last_packet_hash = packet_hash
+                self.last_packet_time = current_time
+
+                logger.debug(f"📥 BLE packet received: {len(data)} bytes")
+                await self.stats.on_packet_from_ble(len(data))
+
+                if self.on_packet_received:
+                    await self.on_packet_received(bytes(data))
+
+            except Exception as e:
+                error_msg = str(e).lower()
+
+                if "not connected" in error_msg or "disconnected" in error_msg:
+                    logger.warning("⚠️  Disconnection detected during read")
+                    self.disconnection_event.set()
+                else:
+                    logger.debug(f"FromRadio drain ended: {e}")
+
+                break
+
     async def _poll_from_radio(self):
         """
-        Poll FromRadio characteristic for incoming packets.
-        Monitors connection health and triggers reconnection on disconnect.
+        Wait for a ToRadio write or FROMNUM notification, then drain FromRadio.
+
+        Do not perform background GATT reads here.  On this BlueZ/Bleak
+        combination, a background read can remain in progress and block
+        subsequent writes indefinitely.
         """
-        logger.debug("Starting FromRadio polling loop")
+        logger.debug("Starting event-driven FromRadio receive loop")
 
         while self.running:
             try:
-                # Check if still connected
-                if not self.client or not self.client.is_connected:
-                    logger.warning("⚠️  BLE connection lost during polling")
+                await self.read_event.wait()
+                self.read_event.clear()
 
-                    # Wait for bridge's disconnect handler to complete reconnection
-                    # Don't call attempt_reconnection() ourselves - let the callback handle it
-                    logger.debug("⏸️  Waiting for reconnection to complete...")
-                    max_wait = 600  # Allow time for all 10 reconnection attempts (up to 10 minutes)
-                    waited = 0
-
-                    while waited < max_wait and self.running:
-                        # Check if we're back online
-                        if self.client and self.client.is_connected:
-                            logger.info("✅ Reconnection completed, resuming polling")
-                            break
-
-                        # Still disconnected, wait a bit more
-                        await asyncio.sleep(1)
-                        waited += 1
-
-                    # Check final state
-                    if not self.client or not self.client.is_connected:
-                        logger.error("💀 Reconnection failed after waiting, exiting polling loop")
-                        self.running = False
-                        break
-
-                    # Reconnection succeeded, continue polling
-                    continue
-
-                # Read from FromRadio characteristic
-                try:
-                    data = await self.client.read_gatt_char(FROMRADIO_UUID)
-
-                    if data and len(data) > 0:
-                        # Deduplicate packets
-                        import time
-                        packet_hash = hash(bytes(data))
-                        current_time = time.time()
-
-                        if (packet_hash == self.last_packet_hash and
-                            (current_time - self.last_packet_time) < 0.1):
-                            logger.debug(f"⏭️  Skipping duplicate packet ({len(data)} bytes)")
-                        else:
-                            self.last_packet_hash = packet_hash
-                            self.last_packet_time = current_time
-
-                            logger.debug(f"📥 BLE packet received: {len(data)} bytes")
-                            await self.stats.on_packet_from_ble(len(data))
-
-                            # Notify callback
-                            if self.on_packet_received:
-                                await self.on_packet_received(bytes(data))
-
-                except Exception as read_err:
-                    if "not connected" in str(read_err).lower():
-                        logger.warning("⚠️  Disconnection detected during read")
-                        self.disconnection_event.set()
-                        continue
-                    else:
-                        logger.debug(f"Read error (may be normal): {read_err}")
-
-                await asyncio.sleep(0.1)  # 100ms polling interval
+                if self.client and self.client.is_connected:
+                    await self._drain_from_radio()
 
             except asyncio.CancelledError:
-                logger.debug("Polling task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in polling loop: {e}")
-                await asyncio.sleep(1)
+                logger.error(f"Error in receive loop: {e}")
+                await asyncio.sleep(0.5)
 
-        logger.debug("Polling loop ended")
+        logger.debug("Receive loop ended")
 
     async def attempt_reconnection(self) -> bool:
         """
@@ -391,7 +437,15 @@ class BLEHandler:
         try:
             logger.debug(f"📤 Sending packet to BLE ({len(packet_bytes)} bytes)")
 
-            await self.client.write_gatt_char(TORADIO_UUID, packet_bytes)
+            async with self.gatt_lock:
+                await asyncio.wait_for(
+                    self.client.write_gatt_char(
+                        TORADIO_UUID, packet_bytes, response=True
+                    ),
+                    timeout=5.0
+                )
+            await asyncio.sleep(0.01)
+            self.read_event.set()
             await self.stats.on_packet_to_ble(len(packet_bytes))
 
             logger.debug(f"✅ Sent {len(packet_bytes)} bytes to BLE")
