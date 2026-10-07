@@ -81,11 +81,13 @@ class MeshtasticBLEBridge:
         self.running = False
         self.poll_task: Optional[asyncio.Task] = None
         self.tcp_server = None
+        self.shutdown_requested = False
 
         # Reconnection state
         self.reconnect_attempts = 0
-        self.is_reconnecting = False
         self.disconnection_event = asyncio.Event()
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._prewarm_task: Optional[asyncio.Task] = None
 
         # Avahi service file path
         self.avahi_service_file = None
@@ -111,6 +113,10 @@ class MeshtasticBLEBridge:
         logger.warning(f"⚠️  BLE device disconnected: {self.ble_address}")
         self.disconnection_event.set()
 
+    @property
+    def is_reconnecting(self):
+        return self._reconnect_task is not None and not self._reconnect_task.done()
+
     async def start(self):
         """Start the BLE-TCP bridge."""
         logger.info(f"Starting BLE-TCP Bridge")
@@ -126,6 +132,10 @@ class MeshtasticBLEBridge:
         # Connect to BLE device
         await self.connect_ble()
 
+        # The bridge owns exactly one polling task for its lifetime; reconnects reuse it.
+        self.poll_task = asyncio.create_task(self.poll_from_radio())
+        logger.debug("✅ Started polling FromRadio characteristic")
+
         # Register mDNS service for autodiscovery
         await self.register_mdns_service()
 
@@ -133,8 +143,30 @@ class MeshtasticBLEBridge:
         if self.cache_nodes:
             await self.prewarm_cache()
 
-        # Start TCP server
-        await self.start_tcp_server()
+        if self.shutdown_requested:
+            return
+
+        # Run the TCP server, but stop if the polling task dies so we never serve without BLE
+        server_task = asyncio.create_task(self.start_tcp_server())
+        try:
+            await asyncio.wait({server_task, self.poll_task}, return_when=asyncio.FIRST_COMPLETED)
+            if not server_task.done():
+                raise RuntimeError("FromRadio polling stopped (BLE reconnection failed)")
+            if not self.shutdown_requested:
+                await server_task
+        finally:
+            self.request_shutdown()
+            server_task.cancel()
+            await asyncio.wait({server_task})
+
+    def request_shutdown(self):
+        """Ask a running start() to return (safe to call from a signal handler)."""
+        self.shutdown_requested = True
+        # Close clients too: on Python 3.12+ Server.wait_closed() waits for open connections.
+        if self.tcp_server:
+            self.tcp_server.close()
+        for writer in list(self.tcp_clients):
+            writer.close()
 
     async def prewarm_cache(self):
         """
@@ -268,14 +300,9 @@ class MeshtasticBLEBridge:
 
             # Reset reconnection state on successful connection
             self.reconnect_attempts = 0
-            self.is_reconnecting = False
             self.disconnection_event.clear()
 
             logger.info(f"✅ Connected to BLE device: {self.ble_address}")
-
-            # Start polling task for FromRadio characteristic (it doesn't support notifications)
-            self.poll_task = asyncio.create_task(self.poll_from_radio())
-            logger.debug(f"✅ Started polling FromRadio characteristic")
 
         except Exception as e:
             logger.error(f"❌ Failed to connect to BLE device: {e}")
@@ -286,12 +313,11 @@ class MeshtasticBLEBridge:
         Attempt to reconnect to BLE device with exponential backoff.
         Returns True if reconnected successfully, False if max attempts exceeded.
         """
-        if self.is_reconnecting:
-            logger.debug("Reconnection already in progress")
-            return True
+        if not self.is_reconnecting:
+            self._reconnect_task = asyncio.create_task(self._reconnect())
+        return await self._reconnect_task
 
-        self.is_reconnecting = True
-
+    async def _reconnect(self):
         while self.reconnect_attempts < self.MAX_RECONNECT_ATTEMPTS and self.running:
             self.reconnect_attempts += 1
             current_attempt = self.reconnect_attempts  # Save for logging after successful connect
@@ -318,12 +344,12 @@ class MeshtasticBLEBridge:
                 # Attempt reconnection (this will reset reconnect_attempts to 0 on success)
                 await self.connect_ble()
 
-                # Re-warm cache if caching is enabled (device needs want_config to start sending data)
+                # Re-warm cache if caching is enabled (device needs want_config to start sending data).
+                # Run in the background: it needs the poll loop, which is waiting on this reconnect.
                 if self.cache_nodes:
-                    await self.prewarm_cache()
+                    self._prewarm_task = asyncio.create_task(self.prewarm_cache())
 
                 logger.info(f"✅ Reconnected successfully after {current_attempt} attempt(s)")
-                self.is_reconnecting = False
                 return True
 
             except Exception as e:
@@ -331,10 +357,8 @@ class MeshtasticBLEBridge:
 
                 if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
                     logger.error(f"💀 Max reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) exceeded")
-                    self.is_reconnecting = False
                     return False
 
-        self.is_reconnecting = False
         return False
 
     async def register_mdns_service(self):
@@ -410,9 +434,7 @@ class MeshtasticBLEBridge:
 
                     if not reconnected:
                         logger.error("💀 Failed to reconnect to BLE device - exiting for container restart")
-                        # Exit with error code so Docker can restart the container
-                        self.running = False
-                        sys.exit(1)
+                        return
 
                     # Successfully reconnected, continue polling
                     continue
@@ -438,8 +460,7 @@ class MeshtasticBLEBridge:
 
                         if not reconnected:
                             logger.error("💀 Failed to reconnect after error - exiting for container restart")
-                            self.running = False
-                            sys.exit(1)
+                            return
                     else:
                         # Other error, back off and retry
                         await asyncio.sleep(1.0)
@@ -824,7 +845,7 @@ class MeshtasticBLEBridge:
         # Close TCP server
         if self.tcp_server:
             logger.info("Closing TCP server...")
-            self.tcp_server.close()
+            self.request_shutdown()
             await self.tcp_server.wait_closed()
             logger.info("✅ TCP server closed")
 
@@ -838,13 +859,11 @@ class MeshtasticBLEBridge:
             except Exception as e:
                 logger.warning(f"Failed to remove mDNS service file: {e}")
 
-        # Cancel polling task
-        if self.poll_task:
-            self.poll_task.cancel()
-            try:
-                await self.poll_task
-            except asyncio.CancelledError:
-                pass
+        # Cancelling the poll task also cancels any reconnect it is awaiting
+        tasks = [t for t in (self.poll_task, self._prewarm_task) if t]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         # Disconnect BLE device
         if self.ble_client and self.ble_client.is_connected:
@@ -980,9 +999,7 @@ Examples:
         # Signal handler for graceful shutdown
         def handle_signal():
             logger.info("\n🛑 Received shutdown signal...")
-            # Close the TCP server to trigger shutdown
-            if bridge.tcp_server:
-                bridge.tcp_server.close()
+            bridge.request_shutdown()
 
         # Register signal handlers with the event loop
         for sig in (signal.SIGTERM, signal.SIGINT):
