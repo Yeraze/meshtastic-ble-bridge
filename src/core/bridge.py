@@ -106,6 +106,10 @@ class MeshtasticBridge:
             server_task.result()  # surface TCP server errors
             raise RuntimeError("TCP server stopped unexpectedly")
         finally:
+            # Close client connections first: on Python 3.12+ a cancelled
+            # Server.serve_forever() waits for every open connection to close.
+            for writer in list(self.tcp.clients):
+                writer.close()
             for task in (server_task, shutdown_task):
                 task.cancel()
             await asyncio.gather(server_task, shutdown_task, return_exceptions=True)

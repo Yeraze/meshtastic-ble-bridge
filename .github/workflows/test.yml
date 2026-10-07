@@ -15,6 +15,7 @@ jobs:
   test-core:
     name: Test Core (${{ matrix.os }} - Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15  # a hung asyncio test should fail fast, not hold a runner for 6h
     strategy:
       fail-fast: false
       matrix:
