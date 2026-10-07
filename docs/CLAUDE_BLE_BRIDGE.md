@@ -23,7 +23,17 @@ The MeshMonitor BLE Bridge is a Python application that bridges Bluetooth Low En
 - Service UUID: `6ba1b218-15a8-461f-9fa8-5dcae273eafd`
 - ToRadio (write): `f75c76d2-129e-4dad-a1dd-7866124401e7`
 - FromRadio (read/notify): `2c55e69e-4993-11ed-b878-0242ac120002`
+- FromNum (notify): `ed9da18c-a800-4f66-a670-aa7547e34453` - wake signal for new FromRadio data
 - Raw protobuf bytes (no framing)
+
+**Receive path (`src/core/ble_handler.py`):**
+- `FROMNUM` notifications and successful `ToRadio` writes wake the receive loop, which drains
+  `FromRadio` until it is empty
+- A keepalive read every 15s (`KEEPALIVE_INTERVAL`) detects silently dead links and keeps the
+  health file fresh on a quiet mesh; without `FROMNUM` the loop polls every 1s instead
+- All GATT reads/writes are serialized with `gatt_lock` (BlueZ dislikes overlapping operations)
+- Read/write timeouts, "not connected" errors and repeated read failures mark the link lost;
+  the receive loop then drives the reconnect itself and exits if it fails (CLI exits 1)
 
 **TCP Side:**
 - Frame: `[0x94][0xC3][LENGTH_MSB][LENGTH_LSB][PROTOBUF]`

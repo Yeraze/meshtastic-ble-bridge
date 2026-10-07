@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import pytest_asyncio
 from meshtastic import mesh_pb2
 
 from core.ble_handler import MESHTASTIC_SERVICE_UUID
@@ -24,8 +25,11 @@ class FakeBLEDevice:
 
     def __init__(self):
         self.available = True
+        self.supports_fromnum = False  # start_notify fails -> bridge falls back to polling
         self.clients = []
         self.to_radio = []  # payloads written by the bridge
+        self.from_radio = []  # queued FromRadio payloads
+        self.read_errors = []  # exceptions raised by the next reads, in order
 
     def drop(self):
         """Link goes down. Like an abnormal BlueZ disconnect, no callback fires."""
@@ -79,12 +83,19 @@ class FakeBleakClient:
         await asyncio.sleep(0)
         if self.zombie or not self.is_connected:
             raise RuntimeError("Not connected")
-        return b""
+        if self._device.read_errors:
+            raise self._device.read_errors.pop(0)
+        return self._device.from_radio.pop(0) if self._device.from_radio else b""
 
-    async def write_gatt_char(self, uuid, data):
+    async def write_gatt_char(self, uuid, data, response=False):
         if self.zombie or not self.is_connected:
             raise RuntimeError("Not connected")
         self._device.to_radio.append(bytes(data))
+
+    async def start_notify(self, uuid, callback):
+        if not self._device.supports_fromnum:
+            raise RuntimeError("Characteristic not found")
+        self.notify_callback = callback
 
 
 async def wait_until(predicate, timeout=10.0):
@@ -122,10 +133,14 @@ async def _fast_sleep(delay, *args, **kwargs):
     await _real_sleep(min(delay, 0.01), *args, **kwargs)
 
 
-@pytest.fixture
-def bridge(device, tmp_path):
+@pytest_asyncio.fixture
+async def bridge(device, tmp_path):
+    # Build inside the test's event loop, as cli.main and the GUI do: on Python 3.9
+    # asyncio.Event/Lock bind to the loop current at construction time.
     bridge = MeshtasticBridge(ADDRESS, tcp_port=0, health_file=str(tmp_path / "health"))
     bridge.HEALTH_INTERVAL = 0.01
+    bridge.ble.fallback_poll_interval = 0.01
+    bridge.ble.KEEPALIVE_INTERVAL = 0.05
     return bridge
 
 
@@ -145,6 +160,7 @@ class TestCoreReconnect:
     @pytest.mark.asyncio
     async def test_reconnects_without_disconnect_callback(self, bridge, device):
         serve_task = await start(bridge)
+        assert not bridge.ble.fromnum_enabled  # fake rejects start_notify -> fallback polling
         first_client = bridge.ble.client
 
         device.drop()
@@ -332,3 +348,140 @@ async def test_new_outage_cancels_previous_reinit(bridge, device):
     assert stale_reinit.cancelled()
     assert bridge._reinit_task is not stale_reinit
     bridge._reinit_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_fromnum_keepalive_detects_silent_link_loss(bridge, device):
+    # With FROMNUM the loop sleeps until notified; the keepalive read must still
+    # notice a link that died without a disconnect callback or notification.
+    device.supports_fromnum = True
+    serve_task = await start(bridge)
+    assert bridge.ble.fromnum_enabled
+    first_client = bridge.ble.client
+    # Let the post-connect drain finish so the loop is idle, waiting on FROMNUM
+    await wait_until(lambda: bridge.ble.last_poll_ok is not None)
+    await _real_sleep(0.2)
+    assert not bridge.ble.read_event.is_set()
+
+    device.make_zombie()
+
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_fromnum_quiet_mesh_stays_healthy(bridge, device):
+    device.supports_fromnum = True
+    bridge.POLL_STALE_AFTER = 0.5
+    serve_task = await start(bridge)
+
+    # No traffic and no notifications for longer than POLL_STALE_AFTER
+    await _real_sleep(1.0)
+    assert bridge.is_healthy()
+
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_fromnum_retries_soon_after_transient_read_error(bridge, device):
+    # FROMNUM only fires for new data: after a non-fatal read error, queued
+    # packets must not wait for the (long) keepalive.
+    device.supports_fromnum = True
+    bridge.ble.KEEPALIVE_INTERVAL = 30.0
+    bridge.ble.fallback_poll_interval = 0.05
+    received = []
+    original_handler = bridge.ble.on_packet_received
+
+    async def record(data):
+        received.append(data)
+        await original_handler(data)
+    bridge.ble.on_packet_received = record
+
+    serve_task = await start(bridge)
+    await wait_until(lambda: bridge.ble.last_poll_ok is not None)
+    await _real_sleep(0.2)  # post-connect drain finished, loop idle on FROMNUM
+
+    device.read_errors.append(RuntimeError("Operation already in progress"))
+    device.from_radio.append(b"queued-packet")
+    bridge.ble.client.notify_callback(None, (1).to_bytes(4, "little"))
+
+    await wait_until(lambda: received == [b"queued-packet"], timeout=3.0)
+    assert not bridge.ble.link_lost  # transient error, not a dead link
+
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_marks_link_lost(bridge, device):
+    bridge.ble.WRITE_TIMEOUT = 0.05
+    serve_task = await start(bridge)
+    first_client = bridge.ble.client
+
+    async def hang(uuid, data, response=False):
+        await _real_sleep(3600)
+    first_client.write_gatt_char = hang
+
+    with pytest.raises(RuntimeError, match="write timed out"):
+        await bridge.ble.send(b"\x01")
+    assert not bridge.ble.gatt_lock.locked()
+
+    # The poll loop treats it as link loss and reconnects
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_persistent_read_errors_trigger_reconnect(bridge, device):
+    serve_task = await start(bridge)
+    first_client = bridge.ble.client
+
+    device.read_errors.extend(
+        RuntimeError("Operation failed") for _ in range(bridge.ble.MAX_DRAIN_FAILURES)
+    )
+
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
+    assert bridge.ble.drain_failures == 0
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_packet_handler_error_is_not_a_read_failure(bridge, device):
+    serve_task = await start(bridge)
+    first_client = bridge.ble.client
+
+    async def broken_handler(data):
+        raise RuntimeError("TCP client disconnected")
+    bridge.ble.on_packet_received = broken_handler
+
+    device.from_radio.extend(b"pkt%d" % i for i in range(bridge.ble.MAX_DRAIN_FAILURES + 2))
+    await wait_until(lambda: not device.from_radio)
+    await _real_sleep(0.1)
+
+    assert bridge.ble.client is first_client
+    assert not bridge.ble.link_lost
+    assert bridge.ble.drain_failures == 0
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_wakes_idle_fromnum_loop(bridge, device):
+    # With FROMNUM the loop idles until notified; link loss detected by send()
+    # must wake it instead of waiting for the keepalive.
+    device.supports_fromnum = True
+    bridge.ble.KEEPALIVE_INTERVAL = 30.0
+    bridge.ble.WRITE_TIMEOUT = 0.05
+    serve_task = await start(bridge)
+    await wait_until(lambda: bridge.ble.last_poll_ok is not None)
+    await _real_sleep(0.2)  # loop idle on FROMNUM
+    first_client = bridge.ble.client
+
+    async def hang(uuid, data, response=False):
+        await _real_sleep(3600)
+    first_client.write_gatt_char = hang
+
+    with pytest.raises(RuntimeError, match="write timed out"):
+        await bridge.ble.send(b"\x01")
+
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy(),
+                     timeout=3.0)
+    await shutdown(bridge, serve_task)
