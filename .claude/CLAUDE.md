@@ -33,7 +33,7 @@ This is the MeshMonitor BLE Bridge - a Python/Docker application that bridges Bl
 
 2. **Writing to BLE:** Use direct GATT write:
    ```python
-   await self.ble_client.write_gatt_char(self.TORADIO_UUID, packet_bytes)
+   await self.ble_client.write_gatt_char(self.TORADIO_UUID, packet_bytes, response=True)
    ```
 
 3. **Docker Requirements:**

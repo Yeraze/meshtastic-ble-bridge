@@ -461,3 +461,27 @@ async def test_packet_handler_error_is_not_a_read_failure(bridge, device):
     assert not bridge.ble.link_lost
     assert bridge.ble.drain_failures == 0
     await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_wakes_idle_fromnum_loop(bridge, device):
+    # With FROMNUM the loop idles until notified; link loss detected by send()
+    # must wake it instead of waiting for the keepalive.
+    device.supports_fromnum = True
+    bridge.ble.KEEPALIVE_INTERVAL = 30.0
+    bridge.ble.WRITE_TIMEOUT = 0.05
+    serve_task = await start(bridge)
+    await wait_until(lambda: bridge.ble.last_poll_ok is not None)
+    await _real_sleep(0.2)  # loop idle on FROMNUM
+    first_client = bridge.ble.client
+
+    async def hang(uuid, data, response=False):
+        await _real_sleep(3600)
+    first_client.write_gatt_char = hang
+
+    with pytest.raises(RuntimeError, match="write timed out"):
+        await bridge.ble.send(b"\x01")
+
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy(),
+                     timeout=3.0)
+    await shutdown(bridge, serve_task)

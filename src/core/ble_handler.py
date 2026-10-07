@@ -418,6 +418,15 @@ class BLEHandler:
 
         logger.debug("Receive loop ended")
 
+    def _mark_link_lost(self):
+        """Flag the link as dead from outside the receive loop, and wake the loop.
+
+        Without the wake-up, a loop idle on FROMNUM would only notice at the
+        next keepalive (up to KEEPALIVE_INTERVAL later).
+        """
+        self.link_lost = True
+        self.read_event.set()
+
     async def _request_reconnect(self) -> bool:
         """Reconnect via the bridge's handler (which also re-initializes the device)."""
         if self.on_disconnected:
@@ -555,7 +564,7 @@ class BLEHandler:
                     # still be in flight, so hold the lock briefly, and a stuck
                     # write means the link is dead.
                     await asyncio.sleep(0.1)
-                    self.link_lost = True
+                    self._mark_link_lost()
                     raise RuntimeError(
                         f"BLE write timed out after {self.WRITE_TIMEOUT}s"
                     )
@@ -571,7 +580,7 @@ class BLEHandler:
             # Handle characteristic not found (services not ready yet)
             if "characteristic" in error_msg.lower() and "not found" in error_msg.lower():
                 logger.warning("⚠️  BLE characteristics not ready, triggering reconnection")
-                self.link_lost = True
+                self._mark_link_lost()
                 self.disconnection_event.set()
                 raise RuntimeError("BLE services not ready, reconnecting")
 
@@ -580,7 +589,7 @@ class BLEHandler:
             # Check if error indicates disconnection
             if "not connected" in error_msg.lower() or "disconnected" in error_msg.lower():
                 logger.warning("⚠️  Detected disconnection during send")
-                self.link_lost = True
+                self._mark_link_lost()
                 self.disconnection_event.set()
 
             raise
