@@ -25,6 +25,7 @@ class BLEHandler:
     RECONNECT_BACKOFF_FACTOR = 2.0
     READ_TIMEOUT = 10.0  # seconds; a FromRadio read stuck longer than this means the link is dead
     KEEPALIVE_INTERVAL = 15.0  # seconds; read FromRadio at least this often even with FROMNUM
+    WRITE_TIMEOUT = 5.0  # seconds; a ToRadio write stuck longer than this means the link is dead
 
     def __init__(self, ble_address: str, stats: StatsCollector):
         self.ble_address = ble_address
@@ -248,7 +249,6 @@ class BLEHandler:
         # and causes another drain immediately afterwards.
         self.read_event.set()
 
-
     def _on_ble_disconnect(self, client: BleakClient):
         """Callback when BLE device disconnects"""
         logger.warning(f"⚠️  BLE device disconnected: {self.ble_address}")
@@ -261,8 +261,14 @@ class BLEHandler:
         if self.on_disconnected:
             asyncio.create_task(self.on_disconnected())
 
-    async def _drain_from_radio(self):
-        """Drain all currently queued FromRadio protobuf messages."""
+    async def _drain_from_radio(self) -> bool:
+        """
+        Drain all currently queued FromRadio protobuf messages.
+
+        Returns:
+            False if the drain stopped on a non-fatal read error, so packets may
+            still be queued on the device; True otherwise.
+        """
         retries = 0
 
         while (self.running and self.client and self.client.is_connected
@@ -289,6 +295,9 @@ class BLEHandler:
                 self.last_poll_ok = time.monotonic()
 
                 if not data:
+                    # Some firmware briefly returns an empty read while the next
+                    # packet is being queued (the official Python client retries
+                    # the same way), so retry a few times before calling it drained.
                     if retries < 5:
                         retries += 1
                         await asyncio.sleep(0.05)
@@ -328,8 +337,11 @@ class BLEHandler:
                     self.disconnection_event.set()
                 else:
                     logger.warning(f"FromRadio drain ended: {e}")
+                    return False
 
                 break
+
+        return True
 
     async def _poll_from_radio(self):
         """
@@ -343,6 +355,8 @@ class BLEHandler:
         Also drives reconnection when the link is lost.
         """
         logger.debug("Starting event-driven FromRadio receive loop")
+
+        retry_soon = False  # last drain hit a non-fatal error; packets may be waiting
 
         while self.running:
             try:
@@ -364,7 +378,10 @@ class BLEHandler:
                 # detects a silently dead link and keeps health status current
                 # on a quiet mesh. Without FROMNUM, poll so unsolicited mesh
                 # traffic is still delivered.
-                timeout = (self.KEEPALIVE_INTERVAL if self.fromnum_enabled
+                # FROMNUM only fires for new data, so after a failed drain retry
+                # on the fallback interval instead of waiting for the keepalive.
+                timeout = (self.KEEPALIVE_INTERVAL
+                           if self.fromnum_enabled and not retry_soon
                            else self.fallback_poll_interval)
                 try:
                     await asyncio.wait_for(self.read_event.wait(), timeout=timeout)
@@ -374,7 +391,7 @@ class BLEHandler:
                 self.read_event.clear()
 
                 if self.client and self.client.is_connected and not self.link_lost:
-                    await self._drain_from_radio()
+                    retry_soon = not await self._drain_from_radio()
 
             except asyncio.CancelledError:
                 break
@@ -509,12 +526,22 @@ class BLEHandler:
             logger.debug(f"📤 Sending packet to BLE ({len(packet_bytes)} bytes)")
 
             async with self.gatt_lock:
-                await asyncio.wait_for(
-                    self.client.write_gatt_char(
-                        TORADIO_UUID, packet_bytes, response=True
-                    ),
-                    timeout=5.0
-                )
+                try:
+                    await asyncio.wait_for(
+                        self.client.write_gatt_char(
+                            TORADIO_UUID, packet_bytes, response=True
+                        ),
+                        timeout=self.WRITE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    # Same as a read timeout: a cancelled D-Bus WriteValue may
+                    # still be in flight, so hold the lock briefly, and a stuck
+                    # write means the link is dead.
+                    await asyncio.sleep(0.1)
+                    self.link_lost = True
+                    raise RuntimeError(
+                        f"BLE write timed out after {self.WRITE_TIMEOUT}s"
+                    )
             await asyncio.sleep(0.01)
             self.read_event.set()
             await self.stats.on_packet_to_ble(len(packet_bytes))

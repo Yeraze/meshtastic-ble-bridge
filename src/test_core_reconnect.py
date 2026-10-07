@@ -28,6 +28,8 @@ class FakeBLEDevice:
         self.supports_fromnum = False  # start_notify fails -> bridge falls back to polling
         self.clients = []
         self.to_radio = []  # payloads written by the bridge
+        self.from_radio = []  # queued FromRadio payloads
+        self.read_errors = []  # exceptions raised by the next reads, in order
 
     def drop(self):
         """Link goes down. Like an abnormal BlueZ disconnect, no callback fires."""
@@ -81,7 +83,9 @@ class FakeBleakClient:
         await asyncio.sleep(0)
         if self.zombie or not self.is_connected:
             raise RuntimeError("Not connected")
-        return b""
+        if self._device.read_errors:
+            raise self._device.read_errors.pop(0)
+        return self._device.from_radio.pop(0) if self._device.from_radio else b""
 
     async def write_gatt_char(self, uuid, data, response=False):
         if self.zombie or not self.is_connected:
@@ -156,6 +160,7 @@ class TestCoreReconnect:
     @pytest.mark.asyncio
     async def test_reconnects_without_disconnect_callback(self, bridge, device):
         serve_task = await start(bridge)
+        assert not bridge.ble.fromnum_enabled  # fake rejects start_notify -> fallback polling
         first_client = bridge.ble.client
 
         device.drop()
@@ -374,4 +379,52 @@ async def test_fromnum_quiet_mesh_stays_healthy(bridge, device):
     await _real_sleep(1.0)
     assert bridge.is_healthy()
 
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_fromnum_retries_soon_after_transient_read_error(bridge, device):
+    # FROMNUM only fires for new data: after a non-fatal read error, queued
+    # packets must not wait for the (long) keepalive.
+    device.supports_fromnum = True
+    bridge.ble.KEEPALIVE_INTERVAL = 30.0
+    bridge.ble.fallback_poll_interval = 0.05
+    received = []
+    original_handler = bridge.ble.on_packet_received
+
+    async def record(data):
+        received.append(data)
+        await original_handler(data)
+    bridge.ble.on_packet_received = record
+
+    serve_task = await start(bridge)
+    await wait_until(lambda: bridge.ble.last_poll_ok is not None)
+    await _real_sleep(0.2)  # post-connect drain finished, loop idle on FROMNUM
+
+    device.read_errors.append(RuntimeError("Operation already in progress"))
+    device.from_radio.append(b"queued-packet")
+    bridge.ble.client.notify_callback(None, (1).to_bytes(4, "little"))
+
+    await wait_until(lambda: received == [b"queued-packet"], timeout=3.0)
+    assert not bridge.ble.link_lost  # transient error, not a dead link
+
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_marks_link_lost(bridge, device):
+    bridge.ble.WRITE_TIMEOUT = 0.05
+    serve_task = await start(bridge)
+    first_client = bridge.ble.client
+
+    async def hang(uuid, data, response=False):
+        await _real_sleep(3600)
+    first_client.write_gatt_char = hang
+
+    with pytest.raises(RuntimeError, match="write timed out"):
+        await bridge.ble.send(b"\x01")
+    assert not bridge.ble.gatt_lock.locked()
+
+    # The poll loop treats it as link loss and reconnects
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
     await shutdown(bridge, serve_task)
