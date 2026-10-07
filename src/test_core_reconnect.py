@@ -195,7 +195,7 @@ class TestCoreReconnect:
         first_client = bridge.ble.client
 
         device.drop()
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: bridge._reconnect_task is not None)
         device.available = True
 
         await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
@@ -221,6 +221,7 @@ class TestCoreReconnect:
         assert results == [True] * 5
         assert bridge.ble.attempt_reconnection.await_count == 1
         await asyncio.wait_for(bridge._reinit_task, timeout=5)
+
 
     @pytest.mark.asyncio
     async def test_shutdown_with_connected_tcp_client(self, bridge, device):
@@ -293,3 +294,19 @@ async def test_disconnect_during_stop_does_not_report_failure(bridge, device):
     assert await bridge._handle_ble_disconnect() is False
 
     failure_callback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_new_outage_cancels_previous_reinit(bridge, device):
+    bridge.running = True
+    stale_reinit = asyncio.create_task(_real_sleep(60))
+    bridge._reinit_task = stale_reinit
+    bridge.ble.client = None
+    bridge.ble.attempt_reconnection = AsyncMock(return_value=True)
+
+    assert await bridge._handle_ble_disconnect() is True
+    await asyncio.sleep(0)
+
+    assert stale_reinit.cancelled()
+    assert bridge._reinit_task is not stale_reinit
+    bridge._reinit_task.cancel()

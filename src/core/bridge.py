@@ -246,6 +246,8 @@ class MeshtasticBridge:
                 logger.info("✅ Reconnected to BLE device, re-initializing connection...")
                 # Run in the background: the device's config response is read by the
                 # polling loop, which is waiting on this reconnect to finish.
+                if self._reinit_task and not self._reinit_task.done():
+                    self._reinit_task.cancel()  # left over from the previous outage
                 self._reinit_task = asyncio.create_task(self._reinitialize_device())
                 return True
 
