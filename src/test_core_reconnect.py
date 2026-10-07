@@ -24,6 +24,7 @@ class FakeBLEDevice:
 
     def __init__(self):
         self.available = True
+        self.supports_fromnum = False  # start_notify fails -> bridge falls back to polling
         self.clients = []
         self.to_radio = []  # payloads written by the bridge
 
@@ -81,10 +82,15 @@ class FakeBleakClient:
             raise RuntimeError("Not connected")
         return b""
 
-    async def write_gatt_char(self, uuid, data):
+    async def write_gatt_char(self, uuid, data, response=False):
         if self.zombie or not self.is_connected:
             raise RuntimeError("Not connected")
         self._device.to_radio.append(bytes(data))
+
+    async def start_notify(self, uuid, callback):
+        if not self._device.supports_fromnum:
+            raise RuntimeError("Characteristic not found")
+        self.notify_callback = callback
 
 
 async def wait_until(predicate, timeout=10.0):
@@ -126,6 +132,8 @@ async def _fast_sleep(delay, *args, **kwargs):
 def bridge(device, tmp_path):
     bridge = MeshtasticBridge(ADDRESS, tcp_port=0, health_file=str(tmp_path / "health"))
     bridge.HEALTH_INTERVAL = 0.01
+    bridge.ble.fallback_poll_interval = 0.01
+    bridge.ble.KEEPALIVE_INTERVAL = 0.05
     return bridge
 
 
@@ -332,3 +340,35 @@ async def test_new_outage_cancels_previous_reinit(bridge, device):
     assert stale_reinit.cancelled()
     assert bridge._reinit_task is not stale_reinit
     bridge._reinit_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_fromnum_keepalive_detects_silent_link_loss(bridge, device):
+    # With FROMNUM the loop sleeps until notified; the keepalive read must still
+    # notice a link that died without a disconnect callback or notification.
+    device.supports_fromnum = True
+    serve_task = await start(bridge)
+    assert bridge.ble.fromnum_enabled
+    first_client = bridge.ble.client
+    # Let the post-connect drain finish so the loop is idle, waiting on FROMNUM
+    await wait_until(lambda: bridge.ble.last_poll_ok is not None)
+    await _real_sleep(0.2)
+    assert not bridge.ble.read_event.is_set()
+
+    device.make_zombie()
+
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
+    await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_fromnum_quiet_mesh_stays_healthy(bridge, device):
+    device.supports_fromnum = True
+    bridge.POLL_STALE_AFTER = 0.5
+    serve_task = await start(bridge)
+
+    # No traffic and no notifications for longer than POLL_STALE_AFTER
+    await _real_sleep(1.0)
+    assert bridge.is_healthy()
+
+    await shutdown(bridge, serve_task)
