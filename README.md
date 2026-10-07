@@ -198,25 +198,40 @@ Container needs `--privileged` flag for BLE access
 The bridge now automatically handles node reboots and BLE disconnections:
 
 **Internal Reconnection:**
-- Detects disconnections immediately via callback and polling
-- Attempts up to 5 reconnections with exponential backoff (2s, 4s, 8s, 16s, 32s)
+- Detects disconnections via the BLE disconnect callback and via polling, including
+  silent link loss where no callback fires or reads/writes start failing
+- Attempts up to 10 reconnections with exponential backoff (2s, 4s, 8s, ... capped at 60s),
+  giving slow-rebooting nodes several minutes to come back
+- Each new outage gets the full set of attempts
 - Continues operation if reconnection succeeds
 
 **Container Restart:**
-- If all reconnection attempts fail, the container exits with error code 1
+- If all reconnection attempts fail, the bridge exits with error code 1 instead of
+  serving TCP with no BLE link behind it
 - Docker's `restart: unless-stopped` policy automatically restarts the container
 - Fresh container attempts clean connection to the device
+
+**Healthcheck:**
+- The Docker image sets `HEALTH_FILE=/tmp/ble-bridge.health`; the bridge touches this file
+  every 10s while BLE is connected (use `--health-file PATH` outside Docker)
+- The container is reported healthy only while that file is fresh, so a TCP port that
+  still accepts connections no longer hides a dead BLE link
+- Note: plain Docker does not restart unhealthy containers; recovery comes from the
+  exit code above plus `restart: unless-stopped`
 
 **Recommended Docker Configuration:**
 ```yaml
 services:
   ble-bridge:
     restart: unless-stopped  # Auto-restart on failure
+    environment:
+      - HEALTH_FILE=/tmp/ble-bridge.health
     healthcheck:
-      test: ["CMD-SHELL", "netstat -tln | grep -q :4403 || exit 1"]
+      test: ["CMD", "python3", "-c", "import os, sys, time; f = '/tmp/ble-bridge.health'; sys.exit(0 if os.path.exists(f) and time.time() - os.path.getmtime(f) < 60 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s
 ```
 
 **Monitoring:**
@@ -226,10 +241,10 @@ docker logs -f ble-bridge
 ```
 
 Look for:
-- `⚠️  BLE device disconnected` - Initial disconnect detected
-- `🔄 Reconnection attempt X/5` - Retry in progress
-- `✅ Reconnected successfully` - Success
-- `💀 Failed to reconnect` - Container will exit and restart
+- `⚠️  BLE connection lost during polling` / `⚠️  BLE device disconnected` - Disconnect detected
+- `🔄 Reconnection attempt X/10` - Retry in progress
+- `✅ Reconnection successful` - Success
+- `💀 Failed to reconnect to BLE device after all attempts` - Bridge will exit and the container restarts
 
 ## Support & Development
 

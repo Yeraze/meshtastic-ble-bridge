@@ -1,6 +1,7 @@
 """BLE connection handling for Meshtastic devices"""
 import asyncio
 import logging
+import time
 from typing import Optional, Callable
 from bleak import BleakClient, BleakScanner
 from .stats import StatsCollector
@@ -21,6 +22,7 @@ class BLEHandler:
     INITIAL_RECONNECT_DELAY = 2.0  # seconds
     MAX_RECONNECT_DELAY = 60.0  # seconds
     RECONNECT_BACKOFF_FACTOR = 2.0
+    READ_TIMEOUT = 10.0  # seconds; a FromRadio read stuck longer than this means the link is dead
 
     def __init__(self, ble_address: str, stats: StatsCollector):
         self.ble_address = ble_address
@@ -35,6 +37,11 @@ class BLEHandler:
         self.is_reconnecting = False
         self.services_ready = False  # True only after service discovery completes
         self.disconnection_event = asyncio.Event()
+        # Set when a read/write proves the link is dead even if Bleak's
+        # is_connected has not caught up yet (it can lag after abnormal disconnects)
+        self.link_lost = False
+        # time.monotonic() of the last FromRadio read that completed (data or empty)
+        self.last_poll_ok: Optional[float] = None
         self.reconnect_lock = asyncio.Lock()  # Prevent concurrent reconnection
 
         # Callbacks
@@ -163,6 +170,7 @@ class BLEHandler:
             # Reset reconnection state
             self.reconnect_attempts = 0
             self.is_reconnecting = False
+            self.link_lost = False
             self.disconnection_event.clear()
 
             # Update stats
@@ -202,41 +210,37 @@ class BLEHandler:
         while self.running:
             try:
                 # Check if still connected
-                if not self.client or not self.client.is_connected:
+                if not self.client or not self.client.is_connected or self.link_lost:
                     logger.warning("⚠️  BLE connection lost during polling")
 
-                    # Wait for bridge's disconnect handler to complete reconnection
-                    # Don't call attempt_reconnection() ourselves - let the callback handle it
-                    logger.debug("⏸️  Waiting for reconnection to complete...")
-                    max_wait = 600  # Allow time for all 10 reconnection attempts (up to 10 minutes)
-                    waited = 0
-
-                    while waited < max_wait and self.running:
-                        # Check if we're back online
-                        if self.client and self.client.is_connected:
-                            logger.info("✅ Reconnection completed, resuming polling")
-                            break
-
-                        # Still disconnected, wait a bit more
-                        await asyncio.sleep(1)
-                        waited += 1
-
-                    # Check final state
-                    if not self.client or not self.client.is_connected:
-                        logger.error("💀 Reconnection failed after waiting, exiting polling loop")
+                    # Drive the reconnect from here rather than waiting for the Bleak
+                    # disconnect callback: it does not fire for every kind of link loss,
+                    # and if it never fires nothing else would start a reconnect.
+                    if not await self._request_reconnect():
+                        logger.error("💀 Reconnection failed, exiting polling loop")
                         self.running = False
                         break
 
-                    # Reconnection succeeded, continue polling
+                    logger.info("✅ Reconnection completed, resuming polling")
                     continue
 
                 # Read from FromRadio characteristic
                 try:
-                    data = await self.client.read_gatt_char(FROMRADIO_UUID)
+                    try:
+                        data = await asyncio.wait_for(
+                            self.client.read_gatt_char(FROMRADIO_UUID),
+                            timeout=self.READ_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        # A hung read (e.g. BlueZ/D-Bus stall) would otherwise freeze
+                        # the loop with is_connected still True
+                        logger.warning(f"⚠️  FromRadio read timed out after {self.READ_TIMEOUT}s")
+                        self.link_lost = True
+                        continue
+                    self.last_poll_ok = time.monotonic()
 
                     if data and len(data) > 0:
                         # Deduplicate packets
-                        import time
                         packet_hash = hash(bytes(data))
                         current_time = time.time()
 
@@ -257,6 +261,7 @@ class BLEHandler:
                 except Exception as read_err:
                     if "not connected" in str(read_err).lower():
                         logger.warning("⚠️  Disconnection detected during read")
+                        self.link_lost = True
                         self.disconnection_event.set()
                         continue
                     else:
@@ -272,6 +277,12 @@ class BLEHandler:
                 await asyncio.sleep(1)
 
         logger.debug("Polling loop ended")
+
+    async def _request_reconnect(self) -> bool:
+        """Reconnect via the bridge's handler (which also re-initializes the device)."""
+        if self.on_disconnected:
+            return bool(await self.on_disconnected())
+        return bool(await self.attempt_reconnection())
 
     async def attempt_reconnection(self) -> bool:
         """
@@ -402,6 +413,7 @@ class BLEHandler:
             # Handle characteristic not found (services not ready yet)
             if "characteristic" in error_msg.lower() and "not found" in error_msg.lower():
                 logger.warning("⚠️  BLE characteristics not ready, triggering reconnection")
+                self.link_lost = True
                 self.disconnection_event.set()
                 raise RuntimeError("BLE services not ready, reconnecting")
 
@@ -410,6 +422,7 @@ class BLEHandler:
             # Check if error indicates disconnection
             if "not connected" in error_msg.lower() or "disconnected" in error_msg.lower():
                 logger.warning("⚠️  Detected disconnection during send")
+                self.link_lost = True
                 self.disconnection_event.set()
 
             raise
@@ -440,6 +453,7 @@ class BLEHandler:
         self._initial_connect = True
         self.reconnect_attempts = 0
         self.is_reconnecting = False
+        self.link_lost = False
         self.services_ready = False
 
     async def scan_devices(self) -> list:

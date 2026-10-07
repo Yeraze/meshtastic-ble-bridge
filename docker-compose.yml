@@ -20,11 +20,16 @@ services:
       # Find it using: docker compose run --rm ble-bridge --scan
       # To change: Edit the address below or override with BLE_ADDRESS environment variable
       - BLE_ADDRESS=48:CA:43:59:4C:71
+      # Touched every 10s while BLE is connected; used by the healthcheck below
+      - HEALTH_FILE=/tmp/ble-bridge.health
     entrypoint: ["sh", "-c"]
     command: ["python -m cli.main $$BLE_ADDRESS --verbose"]
+    # Healthy only while the BLE link is up (not just while TCP accepts connections).
+    # Note: plain Docker does not restart unhealthy containers; the bridge exits
+    # with code 1 when reconnection fails, and restart: unless-stopped handles that.
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket; s = socket.socket(); s.connect(('localhost', 4403)); s.close()"]
+      test: ["CMD", "python3", "-c", "import os, sys, time; f = '/tmp/ble-bridge.health'; sys.exit(0 if os.path.exists(f) and time.time() - os.path.getmtime(f) < 60 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s

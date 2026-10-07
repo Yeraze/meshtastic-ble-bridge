@@ -15,6 +15,7 @@ jobs:
   test-core:
     name: Test Core (${{ matrix.os }} - Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15  # a hung asyncio test should fail fast, not hold a runner for 6h
     strategy:
       fail-fast: false
       matrix:
@@ -40,13 +41,13 @@ jobs:
       - name: Run tests
         run: |
           cd src
-          python -m pytest test_ble_tcp_bridge.py -v --tb=short
+          python -m pytest -v --tb=short
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
         run: |
           cd src
-          python -m pytest test_ble_tcp_bridge.py --cov=core --cov-report=term --cov-report=xml
+          python -m pytest --cov=core --cov-report=term --cov-report=xml
 
       - name: Upload coverage reports
         if: matrix.python-version == '3.11' && matrix.os == 'ubuntu-latest'
