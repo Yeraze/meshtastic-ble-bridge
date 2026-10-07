@@ -170,3 +170,31 @@ async def test_send_waits_for_gatt_lock():
     assert client.writes == [
         (TORADIO_UUID, b"hello", True)
     ]
+
+
+@pytest.mark.asyncio
+async def test_fallback_poll_delivers_unsolicited_packet():
+    client = FakeClient([
+        b"inbound",
+        RuntimeError("done"),
+    ])
+    handler, stats = make_handler(client)
+
+    handler.fromnum_enabled = False
+    handler.fallback_poll_interval = 0.01
+
+    received = []
+
+    async def on_packet(data):
+        received.append(data)
+        handler.running = False
+
+    handler.on_packet_received = on_packet
+
+    await asyncio.wait_for(
+        handler._poll_from_radio(),
+        timeout=0.5,
+    )
+
+    assert received == [b"inbound"]
+    assert stats.from_ble == [7]

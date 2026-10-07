@@ -1,6 +1,7 @@
 """BLE connection handling for Meshtastic devices"""
 import asyncio
 import logging
+import time
 from typing import Optional, Callable
 from bleak import BleakClient, BleakScanner
 from .stats import StatsCollector
@@ -36,6 +37,8 @@ class BLEHandler:
         self.gatt_lock = asyncio.Lock()
         self.read_event = asyncio.Event()
         self.last_from_num = None
+        self.fromnum_enabled = False
+        self.fallback_poll_interval = 1.0
 
         # Reconnection state
         self.reconnect_attempts = 0
@@ -182,16 +185,26 @@ class BLEHandler:
             # Config transfers are still handled by the existing read-driven
             # mechanism. FROMNUM gives us the missing wake-up for asynchronous
             # packets/responses that can arrive after the original ToRadio write.
+            self.fromnum_enabled = False
             try:
                 async with self.gatt_lock:
                     await asyncio.wait_for(
-                        self.client.start_notify(FROMNUM_UUID, self._on_from_num),
-                        timeout=10.0
-                )
+                        self.client.start_notify(
+                            FROMNUM_UUID, self._on_from_num
+                        ),
+                        timeout=10.0,
+                    )
+                self.fromnum_enabled = True
                 logger.info("✅ FROMNUM notifications enabled")
             except Exception as e:
-                # Keep the bridge usable even if notifications fail.
-                logger.warning(f"⚠️ Failed to enable FROMNUM notifications: {e}")
+                logger.warning(
+                    f"⚠️ Failed to enable FROMNUM notifications: {e}; "
+                    "using fallback polling"
+                )
+
+            # On reconnect, wake the existing receive task so it immediately
+            # re-evaluates notification/fallback state.
+            self.read_event.set()
 
             # Start receive task ONLY on initial connect, not on reconnect.
             # The same task remains active across BLE reconnections.
@@ -232,6 +245,8 @@ class BLEHandler:
         """Callback when BLE device disconnects"""
         logger.warning(f"⚠️  BLE device disconnected: {self.ble_address}")
         self.services_ready = False  # Services no longer available
+        self.fromnum_enabled = False
+        self.read_event.set()
         self.disconnection_event.set()
 
         # Notify bridge
@@ -245,10 +260,19 @@ class BLEHandler:
         while self.running and self.client and self.client.is_connected:
             try:
                 async with self.gatt_lock:
-                    data = await asyncio.wait_for(
-                        self.client.read_gatt_char(FROMRADIO_UUID),
-                        timeout=3.0
-                    )
+                    try:
+                        data = await asyncio.wait_for(
+                            self.client.read_gatt_char(FROMRADIO_UUID),
+                            timeout=3.0,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "FromRadio read timed out; allowing BlueZ to settle"
+                        )
+                        # A cancelled D-Bus ReadValue may remain active briefly.
+                        # Keep the GATT lock held during this grace period.
+                        await asyncio.sleep(0.1)
+                        break
 
                 if not data:
                     if retries < 5:
@@ -260,7 +284,6 @@ class BLEHandler:
                 retries = 0
 
                 # Preserve the existing duplicate-packet protection.
-                import time
                 packet_hash = hash(bytes(data))
                 current_time = time.time()
 
@@ -289,7 +312,7 @@ class BLEHandler:
                     logger.warning("⚠️  Disconnection detected during read")
                     self.disconnection_event.set()
                 else:
-                    logger.debug(f"FromRadio drain ended: {e}")
+                    logger.warning(f"FromRadio drain ended: {e}")
 
                 break
 
@@ -305,7 +328,19 @@ class BLEHandler:
 
         while self.running:
             try:
-                await self.read_event.wait()
+                if self.fromnum_enabled:
+                    await self.read_event.wait()
+                else:
+                    try:
+                        await asyncio.wait_for(
+                            self.read_event.wait(),
+                            timeout=self.fallback_poll_interval,
+                        )
+                    except asyncio.TimeoutError:
+                        # FROMNUM unavailable: periodically check FromRadio so
+                        # unsolicited mesh traffic is still delivered.
+                        pass
+
                 self.read_event.clear()
 
                 if self.client and self.client.is_connected:
@@ -471,6 +506,7 @@ class BLEHandler:
     async def disconnect(self):
         """Disconnect from BLE device"""
         self.running = False
+        self.fromnum_enabled = False
 
         # Cancel polling task
         if self.poll_task:
