@@ -1,6 +1,9 @@
 """Main bridge orchestrator - platform agnostic core"""
 import asyncio
 import logging
+import os
+import time
+from typing import Optional
 from meshtastic import mesh_pb2
 from .ble_handler import BLEHandler
 from .tcp_handler import TCPHandler
@@ -17,10 +20,15 @@ class MeshtasticBridge:
     Orchestrates BLE, TCP, caching, and statistics components.
     """
 
+    HEALTH_INTERVAL = 10.0  # seconds between health file updates
+
     def __init__(self, ble_address: str, tcp_port: int = 4403,
-                 cache_enabled: bool = False, max_cache_nodes: int = 500):
+                 cache_enabled: bool = False, max_cache_nodes: int = 500,
+                 health_file: Optional[str] = None):
         self.ble_address = ble_address
         self.tcp_port = tcp_port
+        # Touched periodically while BLE is connected, for container healthchecks
+        self.health_file = health_file
 
         # Initialize components
         self.stats = StatsCollector()
@@ -29,6 +37,10 @@ class MeshtasticBridge:
         self.cache = CacheManager(cache_enabled, max_cache_nodes, self.stats)
 
         self.running = False
+        self._shutdown_event: Optional[asyncio.Event] = None
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._reinit_task: Optional[asyncio.Task] = None
+        self._health_task: Optional[asyncio.Task] = None
 
         # Callback for reconnection failure
         self.on_reconnection_failed = None
@@ -50,6 +62,8 @@ class MeshtasticBridge:
             logger.info(f"Config Caching: Disabled")
 
         self.running = True
+        self._shutdown_event = asyncio.Event()
+        self._remove_health_file()  # don't let a previous run's file report us healthy
 
         # Connect to BLE device
         await self.ble.connect()
@@ -61,16 +75,66 @@ class MeshtasticBridge:
         # Start TCP server
         await self.tcp.start()
 
+        if self.health_file:
+            self._health_task = asyncio.create_task(self._health_loop())
+
         logger.info("✅ Bridge started successfully")
 
     async def serve_forever(self):
-        """Run bridge until stopped"""
-        await self.tcp.serve_forever()
+        """
+        Run bridge until request_shutdown() is called.
+
+        Raises:
+            RuntimeError: If the BLE polling loop stops (reconnection failed), so the
+                process can exit non-zero and be restarted by Docker/systemd instead
+                of serving TCP with no BLE link behind it.
+        """
+        server_task = asyncio.create_task(self.tcp.serve_forever())
+        shutdown_task = asyncio.create_task(self._shutdown_event.wait())
+        watched = {server_task, shutdown_task}
+        if self.ble.poll_task:
+            watched.add(self.ble.poll_task)
+
+        try:
+            await asyncio.wait(watched, return_when=asyncio.FIRST_COMPLETED)
+
+            if self._shutdown_event.is_set():
+                return
+            if self.ble.poll_task and self.ble.poll_task.done():
+                raise RuntimeError("BLE polling stopped (reconnection failed)")
+            server_task.result()  # surface TCP server errors
+            raise RuntimeError("TCP server stopped unexpectedly")
+        finally:
+            for task in (server_task, shutdown_task):
+                task.cancel()
+            await asyncio.gather(server_task, shutdown_task, return_exceptions=True)
+
+    def request_shutdown(self):
+        """Ask serve_forever() to return (safe to call from a signal handler)."""
+        if self._shutdown_event:
+            self._shutdown_event.set()
+
+    def is_healthy(self) -> bool:
+        """True while BLE is connected and the polling loop is running."""
+        client = self.ble.client
+        poll_task = self.ble.poll_task
+        return bool(
+            client and client.is_connected and not self.ble.link_lost
+            and poll_task and not poll_task.done()
+        )
 
     async def stop(self):
         """Stop the bridge"""
         logger.info("Stopping bridge...")
         self.running = False
+        self.request_shutdown()
+
+        # Cancel background work before tearing down BLE
+        tasks = [t for t in (self._reconnect_task, self._reinit_task, self._health_task) if t]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._remove_health_file()
 
         # Stop TCP server
         await self.tcp.stop()
@@ -139,37 +203,51 @@ class MeshtasticBridge:
         """
         await self.ble.send(packet_bytes)
 
-    async def _handle_ble_disconnect(self):
-        """Handle BLE disconnection event"""
+    async def _handle_ble_disconnect(self) -> bool:
+        """
+        Handle BLE disconnection event.
+
+        Called from both the Bleak disconnect callback and the polling loop; all
+        callers share a single reconnect cycle and get its result.
+
+        Returns:
+            True if the BLE link is back, False if all attempts failed
+        """
+        if self._reconnect_task is None or self._reconnect_task.done():
+            self._reconnect_task = asyncio.create_task(self._reconnect_cycle())
+        # Shield so one cancelled caller doesn't abort the reconnect for the others
+        return await asyncio.shield(self._reconnect_task)
+
+    async def _reconnect_cycle(self) -> bool:
+        """Run up to MAX_RECONNECT_ATTEMPTS reconnects, then re-initialize the device."""
+        if not self.running:
+            # Disconnect callback fired by our own shutdown
+            return False
+
+        client = self.ble.client
+        if client and client.is_connected and not self.ble.link_lost:
+            # Late callback for a link that is already back
+            return True
+
         logger.warning("BLE disconnected, attempting reconnection...")
+
+        # Each outage gets the full set of attempts
+        self.ble.reconnect_attempts = 0
 
         # Attempt reconnection with multiple retries
         max_attempts = self.ble.MAX_RECONNECT_ATTEMPTS
         for attempt in range(1, max_attempts + 1):
+            if not self.running:
+                return False
+
             reconnected = await self.ble.attempt_reconnection()
 
             if reconnected:
                 logger.info("✅ Reconnected to BLE device, re-initializing connection...")
-
-                # Re-warm cache if enabled
-                if self.cache.enabled:
-                    await self.cache.prewarm(self._send_to_ble_raw)
-                else:
-                    # Even without cache, send want_config_id to initialize connection
-                    # This triggers the device to send its config, nodes, channels, etc.
-                    try:
-                        from meshtastic import mesh_pb2
-                        import random
-
-                        to_radio = mesh_pb2.ToRadio()
-                        to_radio.want_config_id = random.randint(1, 2**32 - 1)
-
-                        await self._send_to_ble_raw(to_radio.SerializeToString())
-                        logger.info("📨 Sent want_config_id to re-initialize device connection")
-                    except Exception as e:
-                        logger.warning(f"⚠️  Failed to send want_config_id: {e}")
-
-                return
+                # Run in the background: the device's config response is read by the
+                # polling loop, which is waiting on this reconnect to finish.
+                self._reinit_task = asyncio.create_task(self._reinitialize_device())
+                return True
 
             # If not the last attempt, continue to next retry
             if attempt < max_attempts:
@@ -182,7 +260,47 @@ class MeshtasticBridge:
         if self.on_reconnection_failed:
             self.on_reconnection_failed()
 
-        # Let container orchestration handle restart
+        return False
+
+    async def _reinitialize_device(self):
+        """Send want_config_id after a reconnect so the device starts sending data."""
+        # Re-warm cache if enabled
+        if self.cache.enabled:
+            await self.cache.prewarm(self._send_to_ble_raw)
+            return
+
+        # Even without cache, send want_config_id to initialize connection
+        # This triggers the device to send its config, nodes, channels, etc.
+        try:
+            import random
+
+            to_radio = mesh_pb2.ToRadio()
+            to_radio.want_config_id = random.randint(1, 2**32 - 1)
+
+            await self._send_to_ble_raw(to_radio.SerializeToString())
+            logger.info("📨 Sent want_config_id to re-initialize device connection")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to send want_config_id: {e}")
+
+    async def _health_loop(self):
+        """Touch health_file while healthy; a stale file means BLE is down."""
+        while True:
+            if self.is_healthy():
+                try:
+                    with open(self.health_file, 'w') as f:
+                        f.write(f"{time.time():.0f}\n")
+                except OSError as e:
+                    logger.warning(f"⚠️  Failed to update health file {self.health_file}: {e}")
+            await asyncio.sleep(self.HEALTH_INTERVAL)
+
+    def _remove_health_file(self):
+        if self.health_file:
+            try:
+                os.remove(self.health_file)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning(f"⚠️  Failed to remove health file {self.health_file}: {e}")
 
     def get_statistics(self):
         """Get current bridge statistics"""

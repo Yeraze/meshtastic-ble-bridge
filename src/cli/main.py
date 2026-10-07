@@ -63,7 +63,8 @@ async def run_bridge(args):
         ble_address=args.address,
         tcp_port=args.port,
         cache_enabled=args.cache_nodes,
-        max_cache_nodes=args.max_cache_nodes
+        max_cache_nodes=args.max_cache_nodes,
+        health_file=args.health_file
     )
 
     # Setup signal handlers for graceful shutdown
@@ -71,8 +72,7 @@ async def run_bridge(args):
 
     def signal_handler():
         logger.info("Received shutdown signal")
-        asyncio.create_task(bridge.stop())
-        loop.stop()
+        bridge.request_shutdown()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, signal_handler)
@@ -144,6 +144,13 @@ Examples:
         type=int,
         default=500,
         help='Maximum nodes to cache (default: 500)'
+    )
+
+    parser.add_argument(
+        '--health-file',
+        default=os.environ.get('HEALTH_FILE'),
+        help='File to touch every 10s while BLE is connected, for container '
+             'healthchecks (default: $HEALTH_FILE, disabled if unset)'
     )
 
     parser.add_argument(
