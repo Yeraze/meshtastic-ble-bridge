@@ -330,7 +330,12 @@ class BLEHandler:
                 await self.stats.on_packet_from_ble(len(data))
 
                 if self.on_packet_received:
-                    await self.on_packet_received(bytes(data))
+                    # Keep forwarding errors out of the read error handling below:
+                    # a TCP-side failure must not count as a BLE read failure.
+                    try:
+                        await self.on_packet_received(bytes(data))
+                    except Exception as e:
+                        logger.error(f"Error handling FromRadio packet: {e}")
 
             except Exception as e:
                 error_msg = str(e).lower()

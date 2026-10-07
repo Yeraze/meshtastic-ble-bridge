@@ -442,3 +442,22 @@ async def test_persistent_read_errors_trigger_reconnect(bridge, device):
     await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
     assert bridge.ble.drain_failures == 0
     await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_packet_handler_error_is_not_a_read_failure(bridge, device):
+    serve_task = await start(bridge)
+    first_client = bridge.ble.client
+
+    async def broken_handler(data):
+        raise RuntimeError("TCP client disconnected")
+    bridge.ble.on_packet_received = broken_handler
+
+    device.from_radio.extend(b"pkt%d" % i for i in range(bridge.ble.MAX_DRAIN_FAILURES + 2))
+    await wait_until(lambda: not device.from_radio)
+    await _real_sleep(0.1)
+
+    assert bridge.ble.client is first_client
+    assert not bridge.ble.link_lost
+    assert bridge.ble.drain_failures == 0
+    await shutdown(bridge, serve_task)
