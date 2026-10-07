@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import pytest_asyncio
 from meshtastic import mesh_pb2
 
 from core.ble_handler import MESHTASTIC_SERVICE_UUID
@@ -128,8 +129,10 @@ async def _fast_sleep(delay, *args, **kwargs):
     await _real_sleep(min(delay, 0.01), *args, **kwargs)
 
 
-@pytest.fixture
-def bridge(device, tmp_path):
+@pytest_asyncio.fixture
+async def bridge(device, tmp_path):
+    # Build inside the test's event loop, as cli.main and the GUI do: on Python 3.9
+    # asyncio.Event/Lock bind to the loop current at construction time.
     bridge = MeshtasticBridge(ADDRESS, tcp_port=0, health_file=str(tmp_path / "health"))
     bridge.HEALTH_INTERVAL = 0.01
     bridge.ble.fallback_poll_interval = 0.01
