@@ -21,6 +21,7 @@ class MeshtasticBridge:
     """
 
     HEALTH_INTERVAL = 10.0  # seconds between health file updates
+    POLL_STALE_AFTER = 30.0  # unhealthy if no FromRadio read completed for this long
 
     def __init__(self, ble_address: str, tcp_port: int = 4403,
                  cache_enabled: bool = False, max_cache_nodes: int = 500,
@@ -115,12 +116,15 @@ class MeshtasticBridge:
             self._shutdown_event.set()
 
     def is_healthy(self) -> bool:
-        """True while BLE is connected and the polling loop is running."""
+        """True while BLE is connected and the polling loop is running and making progress."""
         client = self.ble.client
         poll_task = self.ble.poll_task
+        last_poll_ok = self.ble.last_poll_ok
         return bool(
             client and client.is_connected and not self.ble.link_lost
             and poll_task and not poll_task.done()
+            and last_poll_ok is not None
+            and time.monotonic() - last_poll_ok < self.POLL_STALE_AFTER
         )
 
     async def stop(self):

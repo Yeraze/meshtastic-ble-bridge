@@ -172,6 +172,21 @@ class TestCoreReconnect:
         await shutdown(bridge, serve_task)
 
     @pytest.mark.asyncio
+    async def test_hung_read_triggers_reconnect(self, bridge, device):
+        bridge.ble.READ_TIMEOUT = 0.05
+        serve_task = await start(bridge)
+        first_client = bridge.ble.client
+
+        async def hang(uuid):
+            await _real_sleep(3600)
+        first_client.read_gatt_char = hang
+
+        await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
+        assert not serve_task.done()
+
+        await shutdown(bridge, serve_task)
+
+    @pytest.mark.asyncio
     async def test_reconnect_failure_makes_serve_forever_raise(self, bridge, device):
         bridge.ble.MAX_RECONNECT_ATTEMPTS = 2
         failure_callback = Mock()
@@ -221,7 +236,6 @@ class TestCoreReconnect:
         assert results == [True] * 5
         assert bridge.ble.attempt_reconnection.await_count == 1
         await asyncio.wait_for(bridge._reinit_task, timeout=5)
-
 
     @pytest.mark.asyncio
     async def test_shutdown_with_connected_tcp_client(self, bridge, device):
@@ -277,7 +291,15 @@ class TestHealthFile:
         assert handler_bridge.is_healthy() is False
 
         handler_bridge.ble.poll_task = Mock(done=Mock(return_value=False))
+        assert handler_bridge.is_healthy() is False  # no read completed yet
+
+        handler_bridge.ble.last_poll_ok = time.monotonic()
         assert handler_bridge.is_healthy() is True
+
+        # Poll loop stuck (no read completed recently)
+        handler_bridge.ble.last_poll_ok = time.monotonic() - handler_bridge.POLL_STALE_AFTER - 1
+        assert handler_bridge.is_healthy() is False
+        handler_bridge.ble.last_poll_ok = time.monotonic()
 
         handler_bridge.ble.link_lost = True
         assert handler_bridge.is_healthy() is False

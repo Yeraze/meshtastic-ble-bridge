@@ -1,6 +1,7 @@
 """BLE connection handling for Meshtastic devices"""
 import asyncio
 import logging
+import time
 from typing import Optional, Callable
 from bleak import BleakClient, BleakScanner
 from .stats import StatsCollector
@@ -21,6 +22,7 @@ class BLEHandler:
     INITIAL_RECONNECT_DELAY = 2.0  # seconds
     MAX_RECONNECT_DELAY = 60.0  # seconds
     RECONNECT_BACKOFF_FACTOR = 2.0
+    READ_TIMEOUT = 10.0  # seconds; a FromRadio read stuck longer than this means the link is dead
 
     def __init__(self, ble_address: str, stats: StatsCollector):
         self.ble_address = ble_address
@@ -38,6 +40,8 @@ class BLEHandler:
         # Set when a read/write proves the link is dead even if Bleak's
         # is_connected has not caught up yet (it can lag after abnormal disconnects)
         self.link_lost = False
+        # time.monotonic() of the last FromRadio read that completed (data or empty)
+        self.last_poll_ok: Optional[float] = None
         self.reconnect_lock = asyncio.Lock()  # Prevent concurrent reconnection
 
         # Callbacks
@@ -222,11 +226,21 @@ class BLEHandler:
 
                 # Read from FromRadio characteristic
                 try:
-                    data = await self.client.read_gatt_char(FROMRADIO_UUID)
+                    try:
+                        data = await asyncio.wait_for(
+                            self.client.read_gatt_char(FROMRADIO_UUID),
+                            timeout=self.READ_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        # A hung read (e.g. BlueZ/D-Bus stall) would otherwise freeze
+                        # the loop with is_connected still True
+                        logger.warning(f"⚠️  FromRadio read timed out after {self.READ_TIMEOUT}s")
+                        self.link_lost = True
+                        continue
+                    self.last_poll_ok = time.monotonic()
 
                     if data and len(data) > 0:
                         # Deduplicate packets
-                        import time
                         packet_hash = hash(bytes(data))
                         current_time = time.time()
 
