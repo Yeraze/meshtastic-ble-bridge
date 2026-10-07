@@ -97,7 +97,7 @@ The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records conta
 - `bridge=ble`
 - `port=4403`
 - `ble_address=<device-mac>`
-- `version=1.4.0`
+- `version=<bridge-version>`
 
 ## Windows Quick Start
 

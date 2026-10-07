@@ -30,7 +30,7 @@ from bleak import BleakClient, BleakScanner
 from meshtastic import mesh_pb2, telemetry_pb2
 
 # Version
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # IMPORTANT: Config caching behavior
 # When --cache-nodes is enabled, the bridge caches the ENTIRE config response
