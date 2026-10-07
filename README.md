@@ -11,7 +11,7 @@ A cross-platform bridge that exposes a TCP API to Bluetooth Low Energy (BLE) Mes
 |----------|--------|-----------|----------|
 | **Linux** | ✅ Stable | Docker | `ghcr.io/yeraze/meshtastic-ble-bridge` |
 | **Windows** | ✅ Stable | GUI (System Tray) | [Releases](https://github.com/Yeraze/meshtastic-ble-bridge/releases) |
-| macOS | 🔜 Planned | TBD | Coming soon |
+| **macOS** | ✅ Stable | GUI (Menu Bar) | [Releases](https://github.com/Yeraze/meshtastic-ble-bridge/releases) |
 
 **Features:**
 - BLE-to-TCP protocol translation
@@ -121,9 +121,33 @@ The bridge advertises itself as `_meshtastic._tcp.local.` with TXT records conta
 
 **See [Windows GUI Guide](docs/WINDOWS_GUI.md) for detailed instructions**
 
+## macOS Quick Start
+
+### Download
+1. Download `MeshtasticBLEBridge-macOS-vX.X.X.dmg` from [Releases](https://github.com/Yeraze/meshtastic-ble-bridge/releases)
+2. Open the DMG and drag `MeshtasticBLEBridge.app` to Applications
+
+### Pair Device (REQUIRED)
+**Device must be paired in System Settings first**
+
+1. Open **System Settings** → **Bluetooth**
+2. Turn on your Meshtastic device
+3. Click **Connect** next to your device
+4. Note the device address
+
+### Run
+1. Launch `MeshtasticBLEBridge` from Applications
+2. Find menu bar icon (top-right corner)
+3. Click icon → **Settings**
+4. Enter BLE MAC address
+5. Click icon → **Connect**
+
+**See [macOS GUI Guide](docs/MACOS_GUI.md) for detailed instructions**
+
 ## Documentation
 
 - **Windows GUI:** See `docs/WINDOWS_GUI.md` for Windows application guide
+- **macOS GUI:** See `docs/MACOS_GUI.md` for macOS application guide
 - **Quick Start:** See `QUICK_START.md` for Linux/Docker step-by-step setup
 - **Deployment:** See `docs/DEPLOY_BLE_BRIDGE.md` for production deployment
 - **User Guide:** See `docs/README_BLE_BRIDGE.md` for usage and troubleshooting
