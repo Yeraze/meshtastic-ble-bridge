@@ -26,6 +26,7 @@ class BLEHandler:
     READ_TIMEOUT = 10.0  # seconds; a FromRadio read stuck longer than this means the link is dead
     KEEPALIVE_INTERVAL = 15.0  # seconds; read FromRadio at least this often even with FROMNUM
     WRITE_TIMEOUT = 5.0  # seconds; a ToRadio write stuck longer than this means the link is dead
+    MAX_DRAIN_FAILURES = 5  # consecutive non-fatal read errors before treating the link as dead
 
     def __init__(self, ble_address: str, stats: StatsCollector):
         self.ble_address = ble_address
@@ -53,6 +54,7 @@ class BLEHandler:
         self.link_lost = False
         # time.monotonic() of the last FromRadio read that completed (data or empty)
         self.last_poll_ok: Optional[float] = None
+        self.drain_failures = 0  # consecutive drains that ended on a non-fatal read error
         self.reconnect_lock = asyncio.Lock()  # Prevent concurrent reconnection
 
         # Callbacks
@@ -182,6 +184,7 @@ class BLEHandler:
             self.reconnect_attempts = 0
             self.is_reconnecting = False
             self.link_lost = False
+            self.drain_failures = 0
             self.disconnection_event.clear()
 
             # Update stats
@@ -293,6 +296,7 @@ class BLEHandler:
                         break
 
                 self.last_poll_ok = time.monotonic()
+                self.drain_failures = 0
 
                 if not data:
                     # Some firmware briefly returns an empty read while the next
@@ -336,7 +340,15 @@ class BLEHandler:
                     self.link_lost = True
                     self.disconnection_event.set()
                 else:
-                    logger.warning(f"FromRadio drain ended: {e}")
+                    self.drain_failures += 1
+                    logger.warning(
+                        f"FromRadio drain ended: {e} "
+                        f"({self.drain_failures}/{self.MAX_DRAIN_FAILURES})"
+                    )
+                    if self.drain_failures >= self.MAX_DRAIN_FAILURES:
+                        logger.warning("⚠️  Reads keep failing, treating the link as lost")
+                        self.link_lost = True
+                        return True
                     return False
 
                 break

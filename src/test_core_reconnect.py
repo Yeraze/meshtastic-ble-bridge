@@ -428,3 +428,17 @@ async def test_write_timeout_marks_link_lost(bridge, device):
     # The poll loop treats it as link loss and reconnects
     await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
     await shutdown(bridge, serve_task)
+
+
+@pytest.mark.asyncio
+async def test_persistent_read_errors_trigger_reconnect(bridge, device):
+    serve_task = await start(bridge)
+    first_client = bridge.ble.client
+
+    device.read_errors.extend(
+        RuntimeError("Operation failed") for _ in range(bridge.ble.MAX_DRAIN_FAILURES)
+    )
+
+    await wait_until(lambda: bridge.ble.client is not first_client and bridge.is_healthy())
+    assert bridge.ble.drain_failures == 0
+    await shutdown(bridge, serve_task)
